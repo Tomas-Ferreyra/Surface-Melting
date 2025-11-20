@@ -10,36 +10,39 @@ import os
 import re
 import numpy as np 
 import pandas as pd
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from scipy.signal import savgol_filter
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, least_squares
 from scipy.stats import linregress
 from scipy.integrate import cumulative_trapezoid
 
 def solution_R( R, A,B ):
-    term1 = A*R/B
-    prod1 = (A-B) / (6 * np.cbrt(B)**4 * np.cbrt(1+B)**2 )
-    acta = 2 * np.sqrt(3) * np.arctan( -(1 + 2* np.cbrt(B/(1+B)) * R ) / np.sqrt(3)  )
-    log1 = 2 * np.log( np.cbrt(1+B) - np.cbrt(B)*R )
-    log2 = np.log( np.cbrt(1+B)**2 + np.cbrt(1+B) * np.cbrt(B) * R + np.cbrt(B)**2 * R**2 )
-    return (term1 + prod1 * (acta + log1 - log2)) 
+    pterm = A*R/B
+    prod = (A+B) / (6 * np.cbrt(B-1)**2 * np.cbrt(B)**4)
+    arcterm = 2*np.sqrt(3) * np.arctan( (1+2*R * np.cbrt(B/(B-1)) ) / np.sqrt(3) )
+    logterm = np.log( ( (np.cbrt(B-1) + np.cbrt(B)*R)**2 - np.cbrt(B-1) * np.cbrt(B) * R ) / (np.cbrt(B-1) - np.cbrt(B)*R )**2  )
+    return pterm + prod * (arcterm + logterm)
 
-def solution_T( R, A,B,Tm,To ):
-    u = 1 - R**3
-    top = (Tm*A + B*(To-Tm)) * u + To
-    bot = A*u + 1
-    return top/bot
+# def solution_T( R, A,B,Tm,To ):
+#     u = 1 - R**3
+#     top = (Tm*A + B*(To-Tm)) * u + To
+#     bot = A*u + 1
+#     return top/bot
 
+def R_of_T(T, A,B, set_tot_cero=True):
+    bot = A * (T-1) + (B+A)
+    argum = 1 - (1-T)/bot 
+    if set_tot_cero:
+        argum[argum<0] = 0
+    return  np.cbrt(argum)
 
-def R_of_T(T, A,B,Tm,To, ):
-    bot = A * (Tm-T) + B * (To-Tm)
-    argum = 1 - (T-To)/bot 
-    return np.cbrt( argum )
-
-def V_of_T(T, A,B,Tm,To):
-    bot = A * (Tm-T) + B * (To-Tm)
-    argum = 1 - (T-To)/bot 
+def V_of_T(T, A,B, set_tot_cero=True):
+    bot = A * (T-1) + (B+A)
+    argum = 1 - (1-T)/bot 
+    if set_tot_cero:
+        argum[argum<0] = 0
     return  argum 
 
 def V_eloss_term(t,T, Tm,rhoi,Vo,L,cp,m,b):
@@ -48,16 +51,26 @@ def V_eloss_term(t,T, Tm,rhoi,Vo,L,cp,m,b):
     eloss = cumulative_trapezoid(integrand, t, initial=0)
     return eloss / bot
 
+def T_adim(R,A,B):
+    bot = A * (R**3-1) - 1
+    top = (B+A) * (R**3-1)        
+    return 1 - top/bot
 
 def constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L ):
     beta = rhoi / rhow
     gamma = Vb/Vo
-    A = beta/ gamma
-    B = -L*beta / (gamma*cp*(To-Tm))
-    C = (To-Tm)/Vo**(1/3)
-    
     Ste = L / (cp * (To-Tm))
-    return A,B,C, beta,Ste
+
+    A = 2*beta/ gamma
+    B = beta/gamma * (Ste-1)
+
+    return A,B, beta,gamma,Ste
+
+def lin_cons(t, val):
+    tlin = t * val[0]
+    tcons = np.ones_like(t) * val[1]
+    funcion = np.minimum(tlin,tcons)
+    return funcion
 
 # Build color map for each label (folder + freq)
 def get_color(folder_name, freq):
@@ -217,6 +230,11 @@ for label, path in file_paths.items():
         print(f"⚠️ Skipping {label} due to error: {e}")
 
 #%%
+rhow, rhoi = 998.2, 916.8 # kg/m3
+Tm = 0 #°C
+L = 334000 # J/kg 
+cp = 4184 # J/(kg K)
+masses = {5:117, 10:112, 20:102}
 
 plt.figure(figsize=(14, 8))
 
@@ -228,8 +246,23 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     T = data["T_top_avg"]
     T_init = data["T_top_init"]
 
+    mass = float(re.split('-| ',label)[1][:-2])
+    Vo = mass / rhoi # m3
+    To = T_init #°C
+    Vb = masses[mass]/rhow #0.102 # m3        
+
+    A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+    
+    minv= np.min(V_of_T((T-Tm)/(To-Tm),A,B, set_tot_cero=False))
+    if minv < 0:
+        Vo = (1 - minv) * Vo
+    A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+
+
+
     # Plot main temperature line
-    plt.plot(t, T,
+    # plt.plot(t, T,
+    plt.plot(t, V_of_T((T-Tm)/(To-Tm),A,B),
              label=rf"{label} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
              color=get_color(folder_name, freq),
              linestyle='-',
@@ -240,13 +273,18 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     min_idx = np.argmin(T)
     t_min = t[min_idx]
     T_min = T[min_idx]
+    
+    Tsv = savgol_filter(T, len(T)//6, 3)
 
     # Plot star marker at minimum
-    plt.plot(t_min, T_min, marker='*', color='yellow',
-             markersize=14, markeredgecolor='black', linewidth=1, zorder=5, label=None)
+    # plt.plot(t, Tsv, 'y--')
+    plt.plot(t, V_of_T((Tsv-Tm)/(To-Tm),A,B), 'y--')
+    
+    # plt.plot(t_min, T_min, marker='*', color='yellow',
+    #          markersize=14, markeredgecolor='black', linewidth=1, zorder=5, label=None)
 
     # --- Print the minimum to terminal ---
-    print(f"⭐ {label}: Min Temperature = {T_min:.2f}°C at {t_min:.1f} s")
+    # print(f"⭐ {label}: Min Temperature = {T_min:.2f}°C at {t_min:.1f} s")
 
 fsize = 15
 plt.xlabel("Time (s)", fontsize=fsize)
@@ -270,19 +308,173 @@ cp = 4184 # J/(kg K)
 R = np.linspace( 0,1, 1000 )
 
 masses = {5:117, 10:112, 20:102}
-cutoffs = {5:0.5, 10:0.61, 20:0.7}
+cutoffs = {5:0.5, 10:0.61, 20:1.1}
+urmss = {1:0.003957, 2:0.00817, 4:0.01844, 8:0.03881, 12:0.06663}
 
 # 5 kg - 4Hz
 
 mass_fig = [5,10,20]
-# mass_fig = [20]
+# mass_fig = [5]
 
-cs, freqs, mss, tinis = [],[],[],[]
+cs, cfs, freqs, mss, tinis = [],[],[],[], []
 cerr = []
 
 ratio = 1.5
 plt.figure( figsize=(14/ratio,8/ratio) ) #figsize=(14, 8))
 
+for i, label in enumerate(sorted(results.keys(), key=sort_key)):
+    
+    folder_name, freq = label.split()
+    data = results[label]
+
+    # --- Calcualte theoretical solution ---
+    mass = float(re.split('-| ',label)[1][:-2])
+    frequency = int(re.split(' ',label)[1][:-2])
+
+    if mass in mass_fig:
+        t = data["t_avg"]
+        T = data["T_top_avg"]
+        T_init = data["T_top_init"]
+        
+        print(f'{mass}kg, {frequency}Hz', end=' ')
+        
+        Vo = mass / rhoi # m3
+        To = T_init #°C
+        Vb = masses[mass]/rhow #0.102 # m3
+        A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+        Pr = 7
+        
+        minv= np.min(V_of_T((T-Tm)/(To-Tm),A,B, set_tot_cero=False))
+        # if minv < -0:
+        #     Vo = (1 - minv) * Vo
+        # print( '\t Real mass: {:.4f}kg,'.format(Vo * rhoi), end=' ' )
+        
+        A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+        
+        ctheory = 0.001 * Ste * Pr / beta * urmss[frequency] / np.cbrt(Vo)
+        
+        # --- Identify and plot the minimum point ---
+        min_idx = np.argmin(T)
+        t_min = t[min_idx]
+        T_min = T[min_idx]
+    
+        Tsv = savgol_filter(T, len(T)//6, 3)
+    
+        # mask = t<t_min      
+        T_tilde = (T-Tm)/(To-Tm)
+        V_tilde = V_of_T(T_tilde, A, B)
+        
+        Vsv = savgol_filter(V_tilde, len(V_tilde)//4, 3)
+        mask1 = np.gradient(Vsv)>0
+        mask2 = Vsv<0.05
+        if np.sum(mask2)>0:
+            fin = np.min( [np.where(mask1)[0][0], np.where(mask2)[0][0] ]) 
+        else:
+            fin = np.where(mask1)[0][0]
+            
+        # fin = len(t)
+
+        fitfun = lambda Temp,c: np.real( ( solution_R( R_of_T(Temp, A, B, set_tot_cero=False) , A, B) - solution_R(1, A, B) ) ) / c
+        
+        def funfit(val):
+            tlin = t * val[0]
+            tcons = np.ones_like(t) * val[1]
+            funcion = np.minimum(tlin,tcons)
+            return np.abs( T_linear - funcion )
+        
+        def funfitf(val):
+            tlin = t[:fin] * val[0]
+            tcons = np.ones_like(t[:fin]) * val[1]
+            funcion = np.minimum(tlin,tcons)
+            return np.abs( T_linear[:fin] - funcion )
+        
+            
+        # Plot main temperature line using function fitfun (should be linear some part)
+        T_linear = fitfun(T_tilde,1)
+        Tsv_linear = fitfun((Tsv-Tm)/(To-Tm),1)
+        
+        
+        mask = t < fin
+        constant_sl = lambda T,c: c*T
+        cc,cov = curve_fit(constant_sl, t[mask], T_linear[mask] )
+        c = cc[0]
+        # print(label,'kg, c = {:.4f}'.format(c) )
+        # print('\t No ice:{:.3f}, {:.1f}% of ice: {:.3f}'.format(solution_R(1, A, B) - solution_R(0, A, B), 0.55**3 * 100 ,solution_R(1, A, B) - solution_R(0.55, A, B)))
+        # # print('\t 7°C:{:.3f}, 12°C: {:.3f}'.format(solution_R(1, A, B) - solution_R(R_of_T( 7, A, B, Tm, To) , A, B),  \
+        # #                                            solution_R(1, A, B) - solution_R(R_of_T(12, A, B, Tm, To), A, B)))
+
+        # Plot main temperature line using function fitfun (should be linear some part)
+        # T_linear = fitfun(T_tilde,1)
+        ls = least_squares(funfit, [c,0.6])
+        lsf = least_squares(funfitf, [c,10])
+        c, cons = ls.x
+        cf, consf = lsf.x
+
+        print('c = {:.4f}, res = {:.4f}'.format(c, np.sum(ls.fun))) #, 'cf = {:.4f}'.format(cf) )
+        # print('\t No ice:{:.3f}, {:.1f}% of ice: {:.3f}'.format(solution_R(1, A, B) - solution_R(0, A, B), 0.55**3 * 100 ,solution_R(1, A, B) - solution_R(0.55, A, B)))
+        # print('\t 7°C:{:.3f}, 12°C: {:.3f}'.format(solution_R(1, A, B) - solution_R(R_of_T( 7, A, B, Tm, To) , A, B),  \
+        #                                            solution_R(1, A, B) - solution_R(R_of_T(12, A, B, Tm, To), A, B)))
+
+        frequ = int(re.split('-| ',label)[-1][:-2])
+        cs.append( c )
+        cfs.append( cf )
+        freqs.append( frequ )
+        mss.append( mass )
+        tinis.append(T_init)
+        # cerr.append( np.sqrt(cov[0,0]) )
+    
+    
+        plt.plot(t * c, T_linear, label=f'{frequ} Hz',
+                  # label=rf"{mass}kg, {freq} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
+                  color=get_color(folder_name, freq),
+                  linestyle='-',
+                  # marker='o', markersize=8, markeredgecolor='black', linewidth=1)
+                  marker='o', markersize=8) 
+        
+        # plt.plot(t, Tsv_linear, 'y--')
+        
+        plt.plot( t * c , lin_cons(t, ls.x) , 'm--' )
+        
+        # plt.plot(t,V_tilde,'.-')
+
+ 
+# plt.hlines(cutoffs[mass_fig[0]], 0, 500, color='black', linestyles='dashed', label='Fit limit' ) #plot limit of fit 
+plt.plot([0,2],[0,2],'--',color='y')
+
+fsize = 12
+plt.xlabel(r"$t$ (s)", fontsize=fsize )
+plt.ylabel(r"$R_s(R_T(T)) - R_s(1)$", fontsize=fsize )
+# plt.title(f"{mass_fig[0]} kg", fontsize=fsize )
+plt.grid(True)
+
+# plt.xscale('log')
+# plt.yscale('log')
+
+plt.legend(loc='lower right', ncols=3)
+plt.tight_layout()
+
+
+filename = f'/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/model_fit_{mass_fig[0]}kg.pdf'
+# filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/model_all_mass_fitted.pdf'
+# plt.savefig(filename, dpi=200, bbox_inches='tight')
+# print()
+# print(filename)
+
+# plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), title="Folder + Frequency")
+plt.show()
+
+#%%
+
+cs = np.array(cs)
+cfs = np.array(cfs)
+cerr = np.array(cerr)
+mss = np.array(mss)
+freqs = np.array(freqs) 
+tinis = np.array(tinis) 
+
+mass_fig = [5,10,20]
+
+plt.figure()
 for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     
     folder_name, freq = label.split()
@@ -301,139 +493,51 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
         To = T_init #°C
         Vb = masses[mass]/rhow #0.102 # m3
         
-        A,B,C, beta,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
-        
-        ctime = np.real( -( solution_R(R, A, B) - solution_R(1, A, B) ) )
-        temp = solution_T(R, A, B, Tm, To)
-        
-        # --- Identify and plot the minimum point ---
-        min_idx = np.argmin(T)
-        t_min = t[min_idx]
-        T_min = T[min_idx]
+        A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+
+    Tf = T_adim(0, A, B)
+
+    plt.plot( t * cs[i], ( (T-Tm)/(To-Tm) ), 
+            # label=rf"{mass}kg, {freq} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
+                color=get_color(folder_name, freq),
+                linestyle='-',
+                # marker='o', markersize=8)
+                marker='o', markersize=8, markeredgecolor='black', linewidth=1)
     
-    
-        # mask = t<t_min        
-        fitfun = lambda Temp,c: np.real( -( solution_R( R_of_T(Temp, A, B, Tm, To) , A, B) - solution_R(1, A, B) ) ) / c
-        
-        
-        # c, _ = curve_fit(fitfun, T[mask], t[mask])
-    
-        # # Plot main temperature line
-        # plt.plot(t, T,
-        #          label=rf"{label} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
-        #          color=get_color(folder_name, freq),
-        #          linestyle='-',
-        #          marker='o', markersize=8,
-        #          markeredgecolor='black', linewidth=1)
-    
-        # # Plot star marker at minimum
-        # plt.plot(t_min, T_min, marker='*', color='yellow',
-        #           markersize=14, markeredgecolor='black', linewidth=1, zorder=5, label=None)
-        
-            
-        # Plot main temperature line using function fitfun (should be linear some part)
-        T_linear = fitfun(T,1)
-        mask = T_linear < cutoffs[mass]
-        constant_sl = lambda T,c: c*T
-        c,cov = curve_fit(constant_sl, t[mask], T_linear[mask] )
-        c = c[0]
-        print(label,'kg, c = {:.4f}'.format(c) )
-        print('\t No ice:{:.3f}, {:.1f}% of ice: {:.3f}'.format(solution_R(1, A, B) - solution_R(0, A, B), 0.55**3 * 100 ,solution_R(1, A, B) - solution_R(0.55, A, B)))
-        # print('\t 7°C:{:.3f}, 12°C: {:.3f}'.format(solution_R(1, A, B) - solution_R(R_of_T( 7, A, B, Tm, To) , A, B),  \
-        #                                            solution_R(1, A, B) - solution_R(R_of_T(12, A, B, Tm, To), A, B)))
+    R = np.linspace(1,0,1000)
+    plt.plot(  solution_R(R,A,B) - solution_R(R[:1],A,B) , ( T_adim(R, A, B))   , 'c--', zorder=20 )
 
-        frequ = int(re.split('-| ',label)[-1][:-2])
-        cs.append( c )
-        freqs.append( frequ )
-        mss.append( mass )
-        tinis.append(T_init)
-        cerr.append( np.sqrt(cov[0,0]) )
-    
-        plt.plot(t, T_linear,
-                  # label=rf"{mass}kg, {freq} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
-                  color=get_color(folder_name, freq),
-                  linestyle='-',
-                  marker='o', markersize=8,
-                  markeredgecolor='black', linewidth=1)
-        
-        plt.plot( t[mask], c*t[mask], 'r--' )
-
-        # plt.plot(t*c, T_linear,
-        #           # label=rf"{mass}kg, {freq} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
-        #           color=get_color(folder_name, freq),
-        #           linestyle='-',
-        #           marker='o', markersize=8,
-        #           markeredgecolor='black', linewidth=1)
-        
-        # plt.plot(c*t, T,
-        #          # label=rf"{mass}kg, {freq} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
-        #          color=get_color(folder_name, freq),
-        #          linestyle='-',
-        #          marker='o', markersize=8,
-        #          markeredgecolor='black', linewidth=1)
-        
-        # plt.plot( t[mask], c*t[mask], 'r--' )
-        
-    # Plot star marker at minimum
-    # plt.plot(t_min, fitfun(T_min,1), marker='*', color='yellow',
-    #           markersize=14, markeredgecolor='black', linewidth=1, zorder=5, label=None)
-
-    
-    # plt.plot(ctime / c , temp, 'r--')
-
-    # # --- Print the minimum to terminal ---
-    # print(f"⭐ {label}: Min Temperature = {T_min:.2f}°C at {t_min:.1f} s", c)
-
-# plt.hlines(cutoffs[mass_fig[0]], 0, 500, color='black', linestyles='dashed', label='Fit limit' ) #plot limit of fit 
-# plt.plot([0,1],[0,1],'--',color='orange')
-
-fsize = 12
-plt.xlabel(r"$Ct$ ", fontsize=fsize )
-plt.ylabel(r"$R_s(R_T(T)) - R_s(1)$", fontsize=fsize )
-# plt.title(f"{mass_fig[0]} kg", fontsize=fsize )
-plt.grid(True)
-
-# plt.xscale('log')
-# plt.yscale('log')
-
-# filename = f'/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/model_fit_{mass_fig[0]}kg.pdf'
-filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/model_all_mass_fitted.pdf'
-# plt.savefig(filename, dpi=200, bbox_inches='tight')
-print()
-print(filename)
-
-# plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), title="Folder + Frequency")
-plt.legend(loc='lower right')
-plt.tight_layout()
 plt.show()
 
-# plt.figure()
-# # plt.plot(ctime / 0.001, R, '.-')
-# plt.plot(ctime / c , temp, '-')
-# plt.show()
 
 #%%
 cs = np.array(cs)
+cfs = np.array(cfs)
 cerr = np.array(cerr)
 mss = np.array(mss)
 freqs = np.array(freqs) 
 tinis = np.array(tinis) 
 
+Pr = 7
 umrss = np.array([0.003957, 0.00817, 0.01844, 0.03881, 0.06663])
 color = [0,'blue','green',0,'red']
+
 # rhow/rhoi*cp/L * umrss
 
 fig, ax = plt.subplots(1,2, figsize=(10,4), layout="constrained")
 for i in [5,10,20]:
     mask = mss==i
-    # ax[0].plot( freqs[mask], cs[mask] , 'o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
-    # ax[1].plot( freqs[mask], cs[mask] * np.cbrt(i / rhoi) / tinis[mask]  , 'o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+    ax[0].plot( freqs[mask], cs[mask] , 'o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+    # ax[0].plot( freqs[mask], cfs[mask] , 's', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
 
-    ax[0].errorbar( freqs[mask], cs[mask], yerr=cerr[mask] , fmt='o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
-    ax[1].errorbar( freqs[mask], cs[mask] * np.cbrt(i / rhoi) / tinis[mask], yerr=cerr[mask] * np.cbrt(i / rhoi) / tinis[mask] , \
-                  fmt='o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+    ax[1].plot( freqs[mask], cs[mask] * np.cbrt(i / rhoi) / tinis[mask]  , 'o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+    # ax[1].plot( freqs[mask], cfs[mask] * np.cbrt(i / rhoi) / tinis[mask]  , 's', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
 
-ax[1].plot( [1,2,4,8,12], rhow/rhoi*cp/L * umrss * 0.09  , '^', color='orange', label='theory?',zorder=4)
+    # ax[0].errorbar( freqs[mask], cs[mask], yerr=cerr[mask] , fmt='o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+    # ax[1].errorbar( freqs[mask], cs[mask] * np.cbrt(i / rhoi) / tinis[mask], yerr=cerr[mask] * np.cbrt(i / rhoi) / tinis[mask] , \
+    #               fmt='o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+
+ax[1].plot( [1,2,4,8,12], rhow/rhoi*cp/L * umrss / Pr * 0.7 , '^', color='orange', label='Theory',zorder=4)
 
 ax[0].legend()
 ax[1].legend()
@@ -449,6 +553,269 @@ filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/constant_th
 
 
 plt.show()
+
+#%%
+# =============================================================================
+# Looking at varying inital mass or initial Vb
+# =============================================================================
+
+def fit_model(t, T_tilde, A, B, set_tot_cero=False, use_fin=False ):
+
+    
+    V_tilde = V_of_T(T_tilde, A, B, set_tot_cero=False)
+    
+    Vsv = savgol_filter(V_tilde, len(V_tilde)//4, 3)
+    mask1 = np.gradient(Vsv)>0
+    mask2 = Vsv<0.05
+    if np.sum(mask2)>0:
+        fin = np.min( [np.where(mask1)[0][0], np.where(mask2)[0][0] ]) 
+    else:
+        fin = np.where(mask1)[0][0]
+        
+    fitfun = lambda Temp,c: np.real( ( solution_R( R_of_T(Temp, A, B, set_tot_cero=False) , A, B) - solution_R(1, A, B) ) ) / c
+    T_linear = fitfun(T_tilde,1)    
+    
+    def funfit(val):
+        tlin = t * val[0]
+        tcons = np.ones_like(t) * val[1]
+        funcion = np.minimum(tlin,tcons)
+        return np.abs( T_linear - funcion )
+    
+    def funfitf(val):
+        tlin = t[:fin] * val[0]
+        tcons = np.ones_like(t[:fin]) * val[1]
+        funcion = np.minimum(tlin,tcons)
+        return np.abs( T_linear[:fin] - funcion )
+    
+    # Plot main temperature line using function fitfun (should be linear some part)
+    
+    mask = t < fin
+    constant_sl = lambda T,c: c*T
+    cc,cov = curve_fit(constant_sl, t[mask], T_linear[mask] )
+    c = cc[0]
+
+    if use_fin: ls = least_squares(funfitf, [c,10])
+    else: ls = least_squares(funfit, [c,0.9])
+
+    return T_linear, ls
+
+
+#%%
+rhow, rhoi = 998.2, 916.8 # kg/m3
+Tm = 0 #°C
+L = 334000 # J/kg 
+cp = 4184 # J/(kg K)
+
+R = np.linspace( 0,1, 1000 )
+
+masses = {5:117, 10:112, 20:102}
+cutoffs = {5:0.5, 10:0.61, 20:1.1}
+urmss = {1:0.003957, 2:0.00817, 4:0.01844, 8:0.03881, 12:0.06663}
+
+# 5 kg - 4Hz
+
+# mass_fig = [5,10,20]
+mass_fig = [20]
+freqs_fig = [8]
+
+cs, cfs, freqs, mss, tinis = [],[],[],[], []
+cerr = []
+
+ratio = 1.5
+# plt.figure( figsize=(14/ratio,8/ratio) ) 
+fig, ax = plt.subplots(1,2, figsize=(18/ratio,8/ratio) ) 
+
+for i, label in enumerate(sorted(results.keys(), key=sort_key)):
+    
+    folder_name, freq = label.split()
+    data = results[label]
+
+    # --- Calcualte theoretical solution ---
+    mass = float(re.split('-| ',label)[1][:-2])
+    frequency = int(re.split(' ',label)[1][:-2])
+
+    if (mass in mass_fig) and (frequency in freqs_fig):
+        t = data["t_avg"]
+        T = data["T_top_avg"]
+        T_init = data["T_top_init"]
+        
+        print(f'{mass}kg, {frequency}Hz')
+        
+        Vo = mass / rhoi # m3
+        To = T_init #°C
+        
+        # in_watmas = masses[mass]
+        # in_watmas = 90
+        for in_watmas in [98,99,100,102,104]:
+        # for in_watmas in [masses[mass]]:
+            Vb = in_watmas /rhow #0.102 # m3
+            
+            print(f'Ini water mass: {in_watmas}kg', end= ' ' )
+    
+            A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+            Pr = 7
+            
+            ctheory = 0.001 * Ste * Pr / beta * urmss[frequency] / np.cbrt(Vo)
+            
+            # --- Identify and plot the minimum point ---
+            min_idx = np.argmin(T)
+            t_min = t[min_idx]
+            T_min = T[min_idx]
+        
+            # Tsv = savgol_filter(T, len(T)//6, 3)
+        
+            # mask = t<t_min      
+            T_tilde = (T-Tm)/(To-Tm)
+            V_tilde = V_of_T(T_tilde, A, B, set_tot_cero=False)
+            
+            # Tsv_t = savgol_filter(T_tilde, len(T_tilde)//6, 3)
+            # Vsv_t = V_of_T(Tsv_t, A, B, set_tot_cero=False)
+
+            T_linear, ls = fit_model(t, T_tilde, A, B)
+
+            c, cons = ls.x
+    
+            print('c = {:.4f}, res = {:.4f}'.format(c, np.sum(ls.fun))) #, 'cf = {:.4f}'.format(cf) )
+    
+            frequ = int(re.split('-| ',label)[-1][:-2])
+            cs.append( c )
+            freqs.append( frequ )
+            mss.append( mass )
+            tinis.append(T_init)        
+        
+            ax[0].plot(t, T_linear,
+                      # label=rf"{mass}kg, {freq} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
+                      # color=get_color(folder_name, freq),
+                      linestyle='-',
+                      # marker='o', markersize=8, markeredgecolor='black', linewidth=1)
+                      marker='o', markersize=8, label=f'{in_watmas} kg') 
+            
+            ax[0].plot( t, lin_cons(t, ls.x) , 'k--', zorder=10 )
+            # ax[0].plot( t[:fin], lin_cons(t[:fin], lsf.x) , 'c--' )
+            
+            ax[1].plot(t,V_tilde,'.-', label=f'{in_watmas} kg')
+            # ax[1].plot(t,Vsv_t,'y--', label=f'{in_watmas} kg')
+
+ 
+# plt.hlines(cutoffs[mass_fig[0]], 0, 500, color='black', linestyles='dashed', label='Fit limit' ) #plot limit of fit 
+# plt.plot([0,2],[0,2],'--',color='y')
+
+fsize = 12
+ax[0].set_xlabel(r"$t$ (s)", fontsize=fsize )
+ax[0].set_ylabel(r"$R_s(R_T(T)) - R_s(1)$", fontsize=fsize )
+# plt.title(f"{mass_fig[0]} kg", fontsize=fsize )
+ax[0].grid(True)
+
+ax[1].set_xlabel(r"$t$ (s)", fontsize=fsize )
+ax[1].set_ylabel(r"$\tilde{V}$", fontsize=fsize )
+ax[1].grid(True)
+ax[1].set_ylim(-0.06,0.3)
+
+# ax[0].set_xscale('log')
+# ax[0].set_yscale('log')
+
+ax[0].legend(loc='lower right')
+ax[1].legend(loc='upper right')
+plt.tight_layout()
+
+filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/different_Vb.pdf'
+# plt.savefig(filename, dpi=200, bbox_inches='tight')
+
+plt.show()
+
+#%%
+
+mass_fig = [20]
+freqs_fig = [8]
+
+
+cs, vbs, ctes, res = [],[],[],[]
+
+for i, label in enumerate(sorted(results.keys(), key=sort_key)):
+    
+    folder_name, freq = label.split()
+    data = results[label]
+
+    # --- Calcualte theoretical solution ---
+    mass = float(re.split('-| ',label)[1][:-2])
+    frequency = int(re.split(' ',label)[1][:-2])
+
+    if (mass in mass_fig) and (frequency in freqs_fig):
+        t = data["t_avg"]
+        T = data["T_top_avg"]
+        T_init = data["T_top_init"]
+        
+        Vo = mass / rhoi # m3
+        To = T_init #°C
+        
+        in_watmas = masses[mass]
+        distib_watmas = np.random.normal(in_watmas, 2, 100000 )
+        
+        for in_watmas in tqdm(distib_watmas):
+            Vb = in_watmas /rhow #0.102 # m3
+            A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+            Pr = 7
+            
+            T_tilde = (T-Tm)/(To-Tm)
+            
+            T_linear, ls = fit_model(t, T_tilde, A, B)
+            # c, cons = ls.x[0], ls.x[1]
+            
+            cs.append( ls.x[0] )
+            ctes.append( ls.x[1] )
+            vbs.append( Vb * rhow )
+            res.append( np.sum(ls.fun) )
+     
+cs, vbs, ctes, res = np.array(cs), np.array(vbs), np.array(ctes), np.array(res)  
+#%%
+
+fig,ax = plt.subplots(1,3, figsize=(15,5))
+ax[0].hist( vbs, bins=100, density=True )
+ax[1].hist( cs, bins=100, density=True )
+ax[2].hist( res, bins=100, density=True )
+
+ax[0].set_xlabel(r'$V_b \rho_w$ (kg)')
+ax[1].set_xlabel(r'$C$ (1/s)')
+ax[2].set_xlabel(r'Residue')
+plt.tight_layout()
+
+filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/statistics.pdf'
+plt.savefig(filename, dpi=200, bbox_inches='tight')
+plt.show()
+
+pi = 1-res/np.max(res)
+pi = pi/np.sum(pi)
+
+w_mean, u_mean = np.sum( pi*cs ), np.mean(cs)
+w_std, u_std = np.sqrt( np.sum( pi*(cs-u_mean)**2 ) ), np.std(cs)
+ind = np.argmin( np.abs(cs - w_mean) )
+print( w_mean, u_mean, vbs[ind] )
+print( w_std, u_std, vbs[ind] )
+
+
+indsort = np.argsort(vbs)
+skip = 10
+fig,ax = plt.subplots(1,3, figsize=(15,5))
+ax[0].plot( vbs[indsort][::skip], cs[indsort][::skip], '.' )
+# ax[0].hlines( [w_mean,u_mean], np.min(vbs), np.max(vbs), linestyles='dashed', colors=['r','g']   )
+
+ax[1].plot( vbs[indsort][::skip], res[indsort][::skip], '.' )
+ax[2].plot( vbs[indsort][::skip], ctes[indsort][::skip], '.' )
+ax[0].set_ylabel(r'$C$ (1/s)')
+ax[1].set_ylabel(r'Residue')
+ax[2].set_ylabel(r'Constant')
+ax[0].set_xlabel(r'$V_b \rho_w$ (kg)')
+ax[1].set_xlabel(r'$V_b \rho_w$ (kg)')
+ax[2].set_xlabel(r'$V_b \rho_w$ (kg)')
+plt.tight_layout()
+
+filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/cs_res_vbs.pdf'
+plt.savefig(filename, dpi=200, bbox_inches='tight')
+plt.show()
+# plt.close('all')
+
+
+
 
 #%%
 # =============================================================================
@@ -475,6 +842,7 @@ def V_eloss_term(t,T,To,Tm, beta,gamma,Ste, rhow,Vo,cp,m,b):
     top = cumulative_trapezoid(integrand, t, initial=0)
     return top / (bot * rhow * Vo * cp )
 
+
 #%%
 # Calculate R(t) using energy balance
 rhow, rhoi = 998.2, 916.8 # kg/m3
@@ -495,9 +863,10 @@ sav_gol_fil = True
 gradient = False
 
 try_mass = [5,10,20]
+# try_mass = [10]
 
 #Plot Radius and Volume over time (or its derivatives over time)
-fig, ax = plt.subplots(1,2,figsize=(18,8))
+fig, ax = plt.subplots(1,3,figsize=(22,7))
 
 for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     folder_name, freq = label.split()
@@ -526,7 +895,7 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     if sav_gol_fil:
         Vsv = savgol_filter(V, len(V)//4, 3)
         mask1 = np.gradient(Vsv)>0
-        mask2 = Vsv<0
+        mask2 = Vsv<0.05
         if np.sum(mask2)>0:
             fin = np.min( [np.where(mask1)[0][0], np.where(mask2)[0][0] ]) 
         else:
@@ -535,6 +904,13 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
 
     # Plot radius and volume over time (with this energy balance)
     if not gradient:
+        ax[2].plot(t, (T-Tm)/(To-Tm),
+                  label=rf"{mass} kg, {frequency} Hz, ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
+                  color=get_color(folder_name, freq),
+                  linestyle='-',
+                  marker='o', markersize=8,
+                  markeredgecolor='black', linewidth=1)
+        
         ax[1].plot(t[:fin], R[:fin],
                   label=rf"{mass} kg, {frequency} Hz, ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
                   color=get_color(folder_name, freq),
@@ -542,8 +918,8 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
                   marker='o', markersize=8,
                   markeredgecolor='black', linewidth=1)
 
-        if show_minima: ax[1].plot( t[fin], R[fin], marker='*', color='yellow',
-                  markersize=14, markeredgecolor='black', linewidth=1, zorder=5, label=None )
+        # if show_minima: ax[1].plot( t[fin], R[fin], marker='*', color='yellow',
+        #           markersize=14, markeredgecolor='black', linewidth=1, zorder=5, label=None )
         if sav_gol_fil:
             ax[1].plot(t[:fin], np.cbrt(Vsv[:fin]),
                       # color=get_color(folder_name, freq),
@@ -584,26 +960,36 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
 # plt.xscale('log')
 # plt.yscale('log')
 
-fsize = 15
+fsize = 11
 ax[0].tick_params(axis='both', which='major', labelsize=fsize)
 ax[1].tick_params(axis='both', which='major', labelsize=fsize)
+ax[2].tick_params(axis='both', which='major', labelsize=fsize)
 ax[0].set_xlabel("t (s)", fontsize=fsize)
 ax[1].set_xlabel("t (s)", fontsize=fsize)
+ax[2].set_xlabel("t (s)", fontsize=fsize)
 if not gradient:
     ax[0].set_ylabel(r"$\tilde{V}$ ", fontsize=fsize)
     ax[1].set_ylabel(r"$\tilde{R}$ ", fontsize=fsize)
+    ax[2].set_ylabel(r"$\tilde{T}$ ", fontsize=fsize)
 else:
     ax[1].set_ylabel(r"$d\tilde{V}/dt$ ", fontsize=fsize)
     ax[0].set_ylabel(r"$d\tilde{R}/dt$ ", fontsize=fsize)
-ax[1].set_title("Radius vs Time", fontsize=fsize)
-ax[0].set_title("Volume vs Time", fontsize=fsize)
+    ax[2].set_ylabel(r"$\tilde{T}$ ", fontsize=fsize)
+
+# ax[1].set_title("Radius vs Time", fontsize=fsize)
+# ax[0].set_title("Volume vs Time", fontsize=fsize)
 
 ax[0].grid(True)
 ax[1].grid(True)
-ax[1].legend(loc='center left', bbox_to_anchor=(1, 0.5), title="Mass + Frequency", fontsize=fsize)
-plt.tight_layout()
+ax[2].grid(True)
 
-filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/temperatures.pdf'
+plt.tight_layout()
+# h, l = ax[1].get_legend_handles_labels()
+# plt.legend(h,l,loc='upper center', ncols=5, bbox_to_anchor=(0.5, -0.5), fancybox=False, shadow=False, fontsize=fsize)
+ax[1].legend(loc='upper center', ncols=5, bbox_to_anchor=(0.5, 1.2), fancybox=False, shadow=False, fontsize=fsize)
+fig.subplots_adjust(bottom=0.08, top=0.85)
+
+filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/experiemtns.pdf'
 # plt.savefig(filename, dpi=200, bbox_inches='tight')
 
 plt.show()
@@ -613,7 +999,7 @@ plt.show()
 apply_heat_loss = False
 
 # dR/dt vs Temperature
-fig, ax = plt.subplots(1,2,figsize=(18,8))
+fig, ax = plt.subplots(1,2,figsize=(18,5))
 
 for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     folder_name, freq = label.split()
@@ -696,13 +1082,13 @@ kappa = 0.143e-6 #m2/s ,dynamic viscosity at 20°C
 
 Pr = nu/kappa
 
-compensate = 1
+compensate = 0
 
 umrss = {1:0.003957, 2:0.00817, 4:0.01844, 8:0.03881, 12:0.06663} #m/s, u_rms
 masses_bath = {5:117, 10:112, 20:102} #in kg
 
 # fig, ax = plt.subplots(1,2,figsize=(14,8) )
-fig, ax = plt.subplots(1,2,figsize=(18,8), sharey=False )
+fig, ax = plt.subplots(1,2,figsize=(15,5), sharey=False )
 
 for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     folder_name, freq = label.split()
@@ -728,7 +1114,7 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
 
     Vsv = savgol_filter(V, len(V)//4, 3)
     mask1 = np.gradient(Vsv)>0
-    mask2 = Vsv<0
+    mask2 = Vsv<0.1
     if np.sum(mask2)>0:
         fin = np.min( [np.where(mask1)[0][0], np.where(mask2)[0][0] ]) 
     else:
@@ -741,7 +1127,9 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     Nu = - beta * Ste * Pr * np.mean(gRsv[:fin]) * Rsv[0] * np.cbrt(Vo)**2 / nu
     Re = u_rms * Rsv[0] * np.cbrt(Vo) / nu
     
-    Nut = - beta * Ste * Pr * gRsv[:fin] * Rsv[:fin] * np.cbrt(Vo)**2 / nu
+    Ste_t = L / (cp * (T-Tm))
+    Nut = - beta * Ste_t[:fin] * Pr * gRsv[:fin] * Rsv[:fin] * np.cbrt(Vo)**2 / nu
+    # Nut = - beta * Ste * Pr * gRsv[:fin] * Rsv[:fin] * np.cbrt(Vo)**2 / nu
     Ret = u_rms * Rsv[:fin] * np.cbrt(Vo) / nu
     
     if compensate == 0:
@@ -765,7 +1153,7 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
                       linestyle='-',
                       marker='o', s=30,
                       edgecolors='black', linewidth=1)
-        ax[1].scatter(Ret, Nut / Re**(1/compensate) , 
+        ax[1].scatter(Ret, Nut / Ret**(1/compensate) , 
                       label=rf"{mass} kg, {frequency} Hz, ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
                       color=get_color(folder_name, freq),
                       linestyle='-',
@@ -773,45 +1161,157 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
                       edgecolors='black', linewidth=1)
     
 if compensate == 0:
-    # res = np.logspace(3.3,4.3)
-    # ax[0].plot( res, res*0.3, 'k--', label=r'Nu $\propto$ Re' )  
+    res = np.logspace(3.5,4.3)
+    ax[0].plot( res, res*0.4, 'k--', label=r'Nu $\propto$ Re' )  
     res = np.logspace(2.5,4.1)
     ax[1].plot( res, res, 'k--', label=r'Nu $\propto$ Re' )  
-    ax[1].plot( res, res**(1/2) * 30, 'm--', label=r'Nu $\propto$ Re$^{1/2}$' )  
+    # ax[1].plot( res, res**(1/2) * 30, 'm--', label=r'Nu $\propto$ Re$^{1/2}$' )  
 else:
-    # res = np.logspace(3.3,4.3)
-    # ax[0].plot( res, res*0.3, 'k--', label=r'Nu $\propto$ Re' )  
+    res = np.logspace(3.5,4.3)
+    ax[0].plot( res, res*0.6 / res**(1/compensate), 'k--', label=r'Nu $\propto$ Re' )  
     res = np.logspace(2.5,4.1)
     ax[1].plot( res, res / res**(1/compensate), 'k--', label=r'Nu $\propto$ Re' )  
-    ax[1].plot( res, res**(1/2) * 1.5 / res**(1/compensate), 'm--', label=r'Nu $\propto$ Re$^{1/2}$' )  
+    # ax[1].plot( res, res**(1/2) * 1.5 / res**(1/compensate), 'm--', label=r'Nu $\propto$ Re$^{1/2}$' )  
+
+fsize = 12
+ax[0].tick_params(axis='both', which='both', labelsize=fsize)
+ax[1].tick_params(axis='both', which='both', labelsize=fsize)
     
 ax[0].set_xscale('log')    
 ax[0].set_yscale('log')    
-ax[0].set_xlabel(r'$\langle$Re$\rangle$')
+ax[0].set_xlabel(r'$\langle$Re$\rangle$', fontsize=fsize)
 
     
 ax[1].set_xscale('log')    
 ax[1].set_yscale('log')    
-ax[1].set_xlabel('Re(t)')
+ax[1].set_xlabel('Re(t)', fontsize=fsize)
 
 if compensate == 0:
-    ax[0].set_ylabel(r"$\langle$Nu$\rangle$")
-    ax[1].set_ylabel(r'Nu(t)')
+    ax[0].set_ylabel(r"$\langle$Nu$\rangle$", fontsize=fsize)
+    ax[1].set_ylabel(r'Nu(t)', fontsize=fsize)
+elif compensate == 1:
+    ax[0].set_ylabel(rf"$\langle$Nu$\rangle$ / $\langle$Re$\rangle$", fontsize=fsize)
+    ax[1].set_ylabel(rf'Nu(t) / Re(t) ', fontsize=fsize)
 else:
-    ax[0].set_ylabel(rf"$\langle$Nu$\rangle$ / $\langle$Re$\rangle^{{1/{compensate}}}$")
-    ax[1].set_ylabel(rf'Nu(t) / Re(t)$^{{1/{compensate}}}$ ')
+    ax[0].set_ylabel(rf"$\langle$Nu$\rangle$ / $\langle$Re$\rangle^{{1/{compensate}}}$", fontsize=fsize)
+    ax[1].set_ylabel(rf'Nu(t) / Re(t)$^{{1/{compensate}}}$ ', fontsize=fsize)
 
 ax[1].legend(loc='center left', bbox_to_anchor=(1, 0.5), title="Mass + Frequency", fontsize=fsize)
 plt.tight_layout()
+
+if compensate==0:
+    filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Nu_Re.pdf'
+else:
+    filename = f'/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Nu_Re_compensated({compensate}).pdf'
+plt.savefig(filename, dpi=200, bbox_inches='tight')
+
 plt.show()
 #%%
 
+umrss = np.array([0.003957, 0.00817, 0.01844, 0.03881, 0.06663])
+fr = [1,2,4,8,12]
+
+plt.figure()
+plt.plot(fr,umrss,'.-')
+# plt.xscale('log')
+# plt.yscale('log')
+plt.show()
 
 
+#%%
+
+# =============================================================================
+# Solution system
+# =============================================================================
+
+def Rs(R,A,B, final_time=1e8):
+    if B == 1:
+        return (A+1)/(2*R**2) + A*R
+   
+    elif B > 1:
+        pterm = A*R/B
+        prod = (A+B) / (6 * np.cbrt(B-1)**2 * np.cbrt(B)**4)
+        arcterm = 2*np.sqrt(3) * np.arctan( (1+2*R * np.cbrt(B/(B-1)) ) / np.sqrt(3) )
+        logterm = np.log( ( (np.cbrt(B-1) + np.cbrt(B)*R)**2 - np.cbrt(B-1) * np.cbrt(B) * R ) / (np.cbrt(B-1) - np.cbrt(B)*R  )**2  )
+
+        product = np.zeros_like(R)
+        product = prod * (arcterm + logterm)
+        product[product > final_time] = final_time 
+        # product[:-1], product[-1] = prod * (arcterm + logterm), final_time
+        return pterm + product
+
+    elif B<1:
+        pterm = A*R/B
+        prod = (A+B) / (6 * np.cbrt(B-1)**2 * np.cbrt(B)**4)
+        arcterm = 2*np.sqrt(3) * np.arctan( (1+2*R * np.cbrt(B/(B-1)) ) / np.sqrt(3) )
+        logterm = np.log( ( (np.cbrt(B-1) + np.cbrt(B)*R)**2 - np.cbrt(B-1) * np.cbrt(B) * R ) / (np.cbrt(B-1) - np.cbrt(B)*R )**2  )
+        return pterm + prod * (arcterm + logterm)
+
+def T_adim(R,A,B):
+    bot = A * (R**3-1) - 1
+    top = (B+A) * (R**3-1)        
+    
+    return 1 - top/bot
+
+
+numb = 100000
+
+fig, ax = plt.subplots(1,3, figsize=(15,5))
+# for B in [1.1]:
+for B in [0.1,0.5,0.9,0.99]:
+    finb = np.cbrt( np.max([0,1-1/B]) )
+    R = np.linspace(1,finb,numb, endpoint=True)
+    ax[0].plot( Rs(R,1,B) - Rs(R[:1],1,B), R , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+    ax[1].plot( Rs(R,1,B) - Rs(R[:1],1,B), R**3 , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+    ax[2].plot( Rs(R,1,B) - Rs(R[:1],1,B), T_adim(R,1,B) , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+
+R = np.linspace(1,0,numb) 
+ax[0].plot( Rs(R,1,1) - Rs(R[:1],1,1), R, 'k--', label='B=1' )
+ax[1].plot( Rs(R,1,1) - Rs(R[:1],1,1), R**3, 'k--', label='B=1' )
+ax[2].plot( Rs(R,1,1) - Rs(R[:1],1,1), T_adim(R,1,1) , 'k--', label='B=1' ) 
+
+for B in [1.02,1.2,2]:
+    finb = np.cbrt( np.max([0,1-1/B]) )
+    R = np.linspace(1,finb,numb, endpoint=True)
+    ax[0].plot( Rs(R,1,B) - Rs(R[:1],1,B), R , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+    ax[1].plot( Rs(R,1,B) - Rs(R[:1],1,B), R**3 , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+    ax[2].plot( Rs(R,1,B) - Rs(R[:1],1,B), T_adim(R,1,B) , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+    
+for l in range(3):
+    ax[l].set_xlabel(r'$Ct$')
+    ax[l].legend()
+    ax[l].grid()
+
+ax[0].set_xlim(-0.8,50)
+ax[0].set_ylabel(r'$\tilde{R}$')
+ax[1].set_xlim(-0.2,12)
+ax[1].set_ylabel(r'$\tilde{V}$')
+ax[2].set_xlim(-0.1,6)
+ax[2].set_ylabel(r'$(T-T_m)/\Delta T$')
+
+plt.tight_layout()
+
+filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Solutions.pdf'
+plt.savefig(filename, dpi=400, bbox_inches='tight')
+
+plt.show()
 
 #%%
 
 
 
-#%%
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
