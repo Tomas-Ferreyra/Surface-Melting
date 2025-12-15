@@ -31,14 +31,14 @@ def solution_R( R, A,B ):
 #     bot = A*u + 1
 #     return top/bot
 
-def R_of_T(T, A,B, set_tot_cero=True):
+def R_of_T(T, A,B, set_tot_cero=False):
     bot = A * (T-1) + (B+A)
     argum = 1 - (1-T)/bot 
     if set_tot_cero:
         argum[argum<0] = 0
     return  np.cbrt(argum)
 
-def V_of_T(T, A,B, set_tot_cero=True):
+def V_of_T(T, A,B, set_tot_cero=False):
     bot = A * (T-1) + (B+A)
     argum = 1 - (1-T)/bot 
     if set_tot_cero:
@@ -63,6 +63,16 @@ def constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L ):
 
     A = 2*beta/ gamma
     B = beta/gamma * (Ste-1)
+
+    return A,B, beta,gamma,Ste
+
+def constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L ):
+    beta = rhoi / rhow
+    gamma = Vb/Vo
+    Ste = L / (cp * (To-Tm))
+
+    A = beta/ gamma
+    B = beta/gamma * Ste
 
     return A,B, beta,gamma,Ste
 
@@ -234,7 +244,11 @@ rhow, rhoi = 998.2, 916.8 # kg/m3
 Tm = 0 #°C
 L = 334000 # J/kg 
 cp = 4184 # J/(kg K)
-masses = {5:117, 10:112, 20:102}
+
+model = 'old'
+
+if   model == 'new': masses = {5:117, 10:112, 20:102} 
+elif model == 'old': masses = {5:117, 10:112, 20:102} # To work with old {5:126, 10:123, 20:119}
 
 plt.figure(figsize=(14, 8))
 
@@ -247,27 +261,38 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     T_init = data["T_top_init"]
 
     mass = float(re.split('-| ',label)[1][:-2])
+    frequ = int(re.split(' ',label)[1][:-2])
+    
     Vo = mass / rhoi # m3
+    if mass == 20: Vo = 17 / rhoi
     To = T_init #°C
     Vb = masses[mass]/rhow #0.102 # m3        
 
     A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
     
-    minv= np.min(V_of_T((T-Tm)/(To-Tm),A,B, set_tot_cero=False))
-    if minv < 0:
-        Vo = (1 - minv) * Vo
-    A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+    minv = np.min( V_of_T((T-Tm)/(To-Tm),A,B, set_tot_cero=False) )
+    # if minv < 0:
+    #     Vo = (1 - minv) * Vo
 
+    if   model == 'new': A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+    elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
 
+    if 8<mass<15:
+        print(f'{mass}kg, \t {frequ}Hz, \t A = {A:.4f}, \t B={B:.4f}')
+        print(Vo, Vb )
+        print()
 
+    T_tilde = (T-Tm)/(To-Tm)
     # Plot main temperature line
     # plt.plot(t, T,
-    plt.plot(t, V_of_T((T-Tm)/(To-Tm),A,B),
-             label=rf"{label} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
+    # plt.plot(t, T,
+    plt.plot(t, V_of_T(T_tilde,A,B, set_tot_cero=False),
+    # plt.plot(t, (1-V_of_T(T_tilde,A,B)) * Vo * rhoi,
+             label=rf"{mass}kg, {frequ}Hz",
              color=get_color(folder_name, freq),
              linestyle='-',
-             marker='o', markersize=8,
-             markeredgecolor='black', linewidth=1)
+               marker='o', markersize=8, markeredgecolor='black', linewidth=1)
+              # marker='o', markersize=8)
 
     # --- Identify and plot the minimum point ---
     min_idx = np.argmin(T)
@@ -278,7 +303,7 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
 
     # Plot star marker at minimum
     # plt.plot(t, Tsv, 'y--')
-    plt.plot(t, V_of_T((Tsv-Tm)/(To-Tm),A,B), 'y--')
+    # plt.plot(t, V_of_T((Tsv-Tm)/(To-Tm),A,B), 'y--')
     
     # plt.plot(t_min, T_min, marker='*', color='yellow',
     #          markersize=14, markeredgecolor='black', linewidth=1, zorder=5, label=None)
@@ -287,14 +312,15 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     # print(f"⭐ {label}: Min Temperature = {T_min:.2f}°C at {t_min:.1f} s")
 
 fsize = 15
-plt.xlabel("Time (s)", fontsize=fsize)
-plt.ylabel("Top Temperature (°C)", fontsize=fsize)
-plt.title("Top Water Temperature vs Time (Minima Marked)", fontsize=fsize)
+plt.xlabel(r"$t$ (s)", fontsize=fsize)
+# plt.ylabel("Top Temperature (°C)", fontsize=fsize)
+plt.ylabel(r"$\tilde{V}$ (new)", fontsize=fsize)
+# plt.title("Top Water Temperature vs Time (Minima Marked)", fontsize=fsize)
 plt.grid(True)
-plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), title="Folder + Frequency", fontsize=fsize)
+plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), title="Folder + Frequency", fontsize=fsize, ncols=1)
 plt.tight_layout()
 
-filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/temperatures.pdf'
+# filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/volume_old.pdf'
 # plt.savefig(filename, dpi=200, bbox_inches='tight')
 
 plt.show()
@@ -305,16 +331,21 @@ Tm = 0 #°C
 L = 334000 # J/kg 
 cp = 4184 # J/(kg K)
 
+model = 'old'
+
 R = np.linspace( 0,1, 1000 )
 
-masses = {5:117, 10:112, 20:102}
+
 cutoffs = {5:0.5, 10:0.61, 20:1.1}
 urmss = {1:0.003957, 2:0.00817, 4:0.01844, 8:0.03881, 12:0.06663}
+
+if   model == 'new': masses = {5:117, 10:112, 20:102} 
+elif model == 'old': masses = {5:124, 10:121, 20:119} # To work with old {5:126, 10:123, 20:119}
 
 # 5 kg - 4Hz
 
 mass_fig = [5,10,20]
-# mass_fig = [5]
+# mass_fig = [20]
 
 cs, cfs, freqs, mss, tinis = [],[],[],[], []
 cerr = []
@@ -341,17 +372,18 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
         Vo = mass / rhoi # m3
         To = T_init #°C
         Vb = masses[mass]/rhow #0.102 # m3
-        A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+        if   model == 'new': A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+        elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
         Pr = 7
         
-        minv= np.min(V_of_T((T-Tm)/(To-Tm),A,B, set_tot_cero=False))
+        # minv= np.min( V_of_T((T-Tm)/(To-Tm),A,B, set_tot_cero=False))
         # if minv < -0:
         #     Vo = (1 - minv) * Vo
         # print( '\t Real mass: {:.4f}kg,'.format(Vo * rhoi), end=' ' )
         
-        A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+        # A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
         
-        ctheory = 0.001 * Ste * Pr / beta * urmss[frequency] / np.cbrt(Vo)
+        # ctheory = 0.001 * Ste * Pr / beta * urmss[frequency] / np.cbrt(Vo)
         
         # --- Identify and plot the minimum point ---
         min_idx = np.argmin(T)
@@ -424,7 +456,8 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
         # cerr.append( np.sqrt(cov[0,0]) )
     
     
-        plt.plot(t * c, T_linear, label=f'{frequ} Hz',
+        plt.plot(t , T_linear, label=f'{frequ} Hz',
+        # plt.plot(t*c , T_linear, label=f'{frequ} Hz',
                   # label=rf"{mass}kg, {freq} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
                   color=get_color(folder_name, freq),
                   linestyle='-',
@@ -433,13 +466,14 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
         
         # plt.plot(t, Tsv_linear, 'y--')
         
-        plt.plot( t * c , lin_cons(t, ls.x) , 'm--' )
+        plt.plot( t  , lin_cons(t, ls.x) , 'm--' )
+        # plt.plot( t*c , lin_cons(t, ls.x) , 'm--' )
         
         # plt.plot(t,V_tilde,'.-')
 
  
 # plt.hlines(cutoffs[mass_fig[0]], 0, 500, color='black', linestyles='dashed', label='Fit limit' ) #plot limit of fit 
-plt.plot([0,2],[0,2],'--',color='y')
+# plt.plot([0,2],[0,2],'--',color='y')
 
 fsize = 12
 plt.xlabel(r"$t$ (s)", fontsize=fsize )
@@ -493,7 +527,9 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
         To = T_init #°C
         Vb = masses[mass]/rhow #0.102 # m3
         
-        A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+        if   model == 'new': A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+        elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+
 
     Tf = T_adim(0, A, B)
 
@@ -537,7 +573,7 @@ for i in [5,10,20]:
     # ax[1].errorbar( freqs[mask], cs[mask] * np.cbrt(i / rhoi) / tinis[mask], yerr=cerr[mask] * np.cbrt(i / rhoi) / tinis[mask] , \
     #               fmt='o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
 
-ax[1].plot( [1,2,4,8,12], rhow/rhoi*cp/L * umrss / Pr * 0.7 , '^', color='orange', label='Theory',zorder=4)
+ax[1].plot( [1,2,4,8,12], rhow/rhoi*cp/L * umrss / Pr * 0.75 , '^', color='orange', label='Theory',zorder=4)
 
 ax[0].legend()
 ax[1].legend()
@@ -606,11 +642,16 @@ Tm = 0 #°C
 L = 334000 # J/kg 
 cp = 4184 # J/(kg K)
 
+model = 'old'
+
 R = np.linspace( 0,1, 1000 )
 
-masses = {5:117, 10:112, 20:102}
 cutoffs = {5:0.5, 10:0.61, 20:1.1}
 urmss = {1:0.003957, 2:0.00817, 4:0.01844, 8:0.03881, 12:0.06663}
+
+if   model == 'new': masses = {5:117, 10:112, 20:102} 
+elif model == 'old': masses = {5:126, 10:123, 20:120} # To work with old {5:126, 10:123, 20:119}
+
 
 # 5 kg - 4Hz
 
@@ -652,7 +693,8 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
             
             print(f'Ini water mass: {in_watmas}kg', end= ' ' )
     
-            A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+            if   model == 'new': A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+            elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
             Pr = 7
             
             ctheory = 0.001 * Ste * Pr / beta * urmss[frequency] / np.cbrt(Vo)
@@ -753,7 +795,8 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
         
         for in_watmas in tqdm(distib_watmas):
             Vb = in_watmas /rhow #0.102 # m3
-            A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+            if   model == 'new': A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+            elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
             Pr = 7
             
             T_tilde = (T-Tm)/(To-Tm)
@@ -810,7 +853,7 @@ ax[2].set_xlabel(r'$V_b \rho_w$ (kg)')
 plt.tight_layout()
 
 filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/cs_res_vbs.pdf'
-plt.savefig(filename, dpi=200, bbox_inches='tight')
+# plt.savefig(filename, dpi=200, bbox_inches='tight')
 plt.show()
 # plt.close('all')
 
@@ -823,18 +866,17 @@ plt.show()
 # =============================================================================
 # Corrected model?
 
-def constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L ):
-    beta = rhoi / rhow
-    gamma = Vb/Vo    
-    Ste = L / (cp * (To-Tm))
+# def constantss( To, Tm, Vo, Vb, rhoi, rhow, cp, L ):
+#     beta = rhoi / rhow
+#     gamma = Vb/Vo    
+#     Ste = L / (cp * (To-Tm))
         
-    return beta, gamma, Ste
+#     return beta, gamma, Ste
 
-
-def V_of_T(T,To,Tm, beta,gamma,Ste ):
-    bot = beta * ( Ste*(To-Tm) + 2*T-Tm-To ) 
-    top = gamma * (T-To)
-    return 1 + top / bot
+# def V_of_T_bgs(T,To,Tm, beta,gamma,Ste ):
+#     bot = beta * ( Ste*(To-Tm) + 2*T-Tm-To ) 
+#     top = gamma * (T-To)
+#     return 1 + top / bot
 
 def V_eloss_term(t,T,To,Tm, beta,gamma,Ste, rhow,Vo,cp,m,b):
     bot = beta * ( Ste*(To-Tm) + 2*T-Tm-To ) 
@@ -854,7 +896,10 @@ cp = 4184 # J/(kg K)
 m = -8.077026040191905
 b = 188.25141687003767
 
-masses_bath = {5:117, 10:112, 20:102} #in kg
+model = 'old'
+
+if   model == 'new': masses_bath = {5:117, 10:112, 20:102} 
+elif model == 'old': masses_bath = {5:126, 10:123, 20:120} # To work with old {5:126, 10:123, 20:119}
 
 apply_heat_loss = False
 show_minima = True
@@ -885,8 +930,15 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     if mass not in try_mass:
         continue
 
-    beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )      
-    V = V_of_T(T, To,Tm, beta,gamma,Ste)
+
+    # beta,gamma,Ste = constantss( To, Tm, Vo, Vb, rhoi, rhow, cp, L )      
+    # V = V_of_T_bgs(T, To,Tm, beta,gamma,Ste)
+    
+    if   model == 'new': A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+    elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+    T_tilde = (T-Tm)/(To-Tm)
+    V = V_of_T(T_tilde,A,B) 
+
     if apply_heat_loss:
         V -= V_eloss_term(t,T,To,Tm, beta,gamma,Ste, rhow,Vo,cp,m,b)
 
@@ -1015,8 +1067,13 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     To = T_init #°C
     Vb = masses_bath[mass] / rhow #0.102 # m3
     
-    beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )      
-    V = V_of_T(T, To,Tm, beta,gamma,Ste)
+    # beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )      
+    # V = V_of_T(T, To,Tm, beta,gamma,Ste)
+    if   model == 'new': A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+    elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+    T_tilde = (T-Tm)/(To-Tm)
+    V = V_of_T(T_tilde,A,B) 
+
     if apply_heat_loss:
         V -= V_eloss_term(t,T,To,Tm, beta,gamma,Ste, rhow,Vo,cp,m,b)
         
@@ -1082,10 +1139,14 @@ kappa = 0.143e-6 #m2/s ,dynamic viscosity at 20°C
 
 Pr = nu/kappa
 
+model = 'old'
+
 compensate = 0
 
 umrss = {1:0.003957, 2:0.00817, 4:0.01844, 8:0.03881, 12:0.06663} #m/s, u_rms
-masses_bath = {5:117, 10:112, 20:102} #in kg
+
+if   model == 'new': masses_bath = {5:117, 10:112, 20:102} 
+elif model == 'old': masses_bath = {5:126, 10:123, 20:120} # To work with old {5:126, 10:123, 20:119}
 
 # fig, ax = plt.subplots(1,2,figsize=(14,8) )
 fig, ax = plt.subplots(1,2,figsize=(15,5), sharey=False )
@@ -1105,8 +1166,13 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     Vb = masses_bath[mass] / rhow #0.102 # m3
     u_rms = umrss[int(frequency)]
     
-    beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )      
-    V = V_of_T(T, To,Tm, beta,gamma,Ste)
+    # beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )      
+    # V = V_of_T(T, To,Tm, beta,gamma,Ste)
+    if   model == 'new': A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+    elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
+    T_tilde = (T-Tm)/(To-Tm)
+    V = V_of_T(T_tilde,A,B) 
+
     if apply_heat_loss:
         V -= V_eloss_term(t,T,To,Tm, beta,gamma,Ste, rhow,Vo,cp,m,b)
         
@@ -1114,7 +1180,7 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
 
     Vsv = savgol_filter(V, len(V)//4, 3)
     mask1 = np.gradient(Vsv)>0
-    mask2 = Vsv<0.1
+    mask2 = Vsv<0.5
     if np.sum(mask2)>0:
         fin = np.min( [np.where(mask1)[0][0], np.where(mask2)[0][0] ]) 
     else:
@@ -1203,7 +1269,7 @@ if compensate==0:
     filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Nu_Re.pdf'
 else:
     filename = f'/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Nu_Re_compensated({compensate}).pdf'
-plt.savefig(filename, dpi=200, bbox_inches='tight')
+# plt.savefig(filename, dpi=200, bbox_inches='tight')
 
 plt.show()
 #%%
@@ -1296,7 +1362,33 @@ plt.savefig(filename, dpi=400, bbox_inches='tight')
 
 plt.show()
 
+
+
+
+
+
+
+
+
+
+
 #%%
+
+
+
+
+
+
+
+
+#%%
+
+
+
+
+
+
+
 
 
 
