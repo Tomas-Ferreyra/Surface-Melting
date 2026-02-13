@@ -11,6 +11,7 @@ import re
 import numpy as np 
 import pandas as pd
 from tqdm import tqdm
+from datetime import datetime
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from scipy.signal import savgol_filter
@@ -32,14 +33,14 @@ def solution_R( R, A,B ):
 #     return top/bot
 
 def R_of_T(T, A,B, set_tot_cero=False):
-    bot = A * (T-1) + (B+A)
+    bot =  B + A*T
     argum = 1 - (1-T)/bot 
     if set_tot_cero:
         argum[argum<0] = 0
     return  np.cbrt(argum)
 
 def V_of_T(T, A,B, set_tot_cero=False):
-    bot = A * (T-1) + (B+A)
+    bot = B + A*T
     argum = 1 - (1-T)/bot 
     if set_tot_cero:
         argum[argum<0] = 0
@@ -71,7 +72,7 @@ def constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L ):
     gamma = Vb/Vo
     Ste = L / (cp * (To-Tm))
 
-    A = beta/ gamma
+    A = beta/gamma
     B = beta/gamma * Ste
 
     return A,B, beta,gamma,Ste
@@ -252,6 +253,7 @@ elif model == 'old': masses = {5:117, 10:112, 20:102} # To work with old {5:126,
 
 plt.figure(figsize=(14, 8))
 
+betas, gammas, stes, mints, minvs = [],[],[],[],[]
 for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     folder_name, freq = label.split()
     data = results[label]
@@ -264,28 +266,35 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     frequ = int(re.split(' ',label)[1][:-2])
     
     Vo = mass / rhoi # m3
-    if mass == 20: Vo = 17 / rhoi
+    # if mass == 20: Vo = 17 / rhoi
     To = T_init #°C
     Vb = masses[mass]/rhow #0.102 # m3        
 
-    A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
-    
-    minv = np.min( V_of_T((T-Tm)/(To-Tm),A,B, set_tot_cero=False) )
+    # A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )    
+    # minv = np.min( V_of_T((T-Tm)/(To-Tm),A,B, set_tot_cero=False) )
     # if minv < 0:
     #     Vo = (1 - minv) * Vo
 
     if   model == 'new': A,B, beta,gamma,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
     elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
 
-    if 8<mass<15:
-        print(f'{mass}kg, \t {frequ}Hz, \t A = {A:.4f}, \t B={B:.4f}')
-        print(Vo, Vb )
-        print()
+    # if 8<mass<15:
+    #     print(f'{mass}kg, \t {frequ}Hz, \t A = {A:.4f}, \t B={B:.4f}')
+    #     print(Vo, Vb )
+    #     print()
 
     T_tilde = (T-Tm)/(To-Tm)
+
+    print(fr"{mass:.0f} kg, {frequ} Hz, (beta,gamma,Ste,minT): ({beta:.4f},{gamma:.4f},{Ste:.4f},{np.min(T_tilde)})" )
+    betas.append(beta)
+    gammas.append(gamma)
+    stes.append(Ste)
+    mints.append(np.min(T_tilde))
+    minvs.append( np.min(V_of_T(T_tilde,A,B, set_tot_cero=False)) )
+    
     # Plot main temperature line
     # plt.plot(t, T,
-    # plt.plot(t, T,
+    # plt.plot(t, T_tilde,
     plt.plot(t, V_of_T(T_tilde,A,B, set_tot_cero=False),
     # plt.plot(t, (1-V_of_T(T_tilde,A,B)) * Vo * rhoi,
              label=rf"{mass}kg, {frequ}Hz",
@@ -345,7 +354,7 @@ elif model == 'old': masses = {5:124, 10:121, 20:119} # To work with old {5:126,
 # 5 kg - 4Hz
 
 mass_fig = [5,10,20]
-# mass_fig = [20]
+# mass_fig = [5]
 
 cs, cfs, freqs, mss, tinis = [],[],[],[], []
 cerr = []
@@ -456,8 +465,8 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
         # cerr.append( np.sqrt(cov[0,0]) )
     
     
-        plt.plot(t , T_linear, label=f'{frequ} Hz',
-        # plt.plot(t*c , T_linear, label=f'{frequ} Hz',
+        # plt.plot(t , T_linear, label=f'{frequ} Hz',
+        plt.plot(t*c , T_linear, label=f'{frequ} Hz',
                   # label=rf"{mass}kg, {freq} ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
                   color=get_color(folder_name, freq),
                   linestyle='-',
@@ -466,8 +475,8 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
         
         # plt.plot(t, Tsv_linear, 'y--')
         
-        plt.plot( t  , lin_cons(t, ls.x) , 'm--' )
-        # plt.plot( t*c , lin_cons(t, ls.x) , 'm--' )
+        # plt.plot( t  , lin_cons(t, ls.x) , '--', color='darkviolet')
+        plt.plot( t*c , lin_cons(t, ls.x) , 'm--' )
         
         # plt.plot(t,V_tilde,'.-')
 
@@ -476,8 +485,9 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
 # plt.plot([0,2],[0,2],'--',color='y')
 
 fsize = 12
-plt.xlabel(r"$t$ (s)", fontsize=fsize )
-plt.ylabel(r"$R_s(R_T(T)) - R_s(1)$", fontsize=fsize )
+# plt.xlabel(r"$t$ (s)", fontsize=fsize )
+plt.xlabel(r"$C t$", fontsize=fsize )
+plt.ylabel(r"$R_s(R_T(\tilde{T})) - R_s(1)$", fontsize=fsize )
 # plt.title(f"{mass_fig[0]} kg", fontsize=fsize )
 plt.grid(True)
 
@@ -581,7 +591,7 @@ ax[1].legend()
 ax[0].set_ylabel(r'$C$ (1/s)')
 ax[0].set_xlabel(r'$f$ (Hz)')
 
-ax[1].set_ylabel(r'$C \,\, V_0^{1/3} \, / \, (T_0-T_m)$ (m/sK)')
+ax[1].set_ylabel(r'$C \,\, V_0^{1/3} \, / \, \Delta T$ (m/sK)')
 ax[1].set_xlabel(r'$f$ (Hz)')
 
 filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/constant_theory.pdf'
@@ -650,7 +660,8 @@ cutoffs = {5:0.5, 10:0.61, 20:1.1}
 urmss = {1:0.003957, 2:0.00817, 4:0.01844, 8:0.03881, 12:0.06663}
 
 if   model == 'new': masses = {5:117, 10:112, 20:102} 
-elif model == 'old': masses = {5:126, 10:123, 20:120} # To work with old {5:126, 10:123, 20:119}
+if   model == 'old': masses = {5:117, 10:112, 20:102} 
+# elif model == 'old': masses = {5:126, 10:123, 20:120} # To work with old {5:126, 10:123, 20:119}
 
 
 # 5 kg - 4Hz
@@ -896,15 +907,18 @@ cp = 4184 # J/(kg K)
 m = -8.077026040191905
 b = 188.25141687003767
 
+plt.rcParams.update({'font.size':15})
+
 model = 'old'
 
 if   model == 'new': masses_bath = {5:117, 10:112, 20:102} 
-elif model == 'old': masses_bath = {5:126, 10:123, 20:120} # To work with old {5:126, 10:123, 20:119}
+elif model == 'old': masses_bath = {5:117, 10:112, 20:102} 
+# elif model == 'old': masses_bath = {5:126, 10:123, 20:120} # To work with old {5:126, 10:123, 20:119}
 
 apply_heat_loss = False
-show_minima = True
+show_minima = False
 
-sav_gol_fil = True
+sav_gol_fil = False
 gradient = False
 
 try_mass = [5,10,20]
@@ -938,6 +952,8 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
     elif model == 'old': A,B, beta,gamma,Ste = constants_old( To, Tm, Vo, Vb, rhoi, rhow, cp, L )
     T_tilde = (T-Tm)/(To-Tm)
     V = V_of_T(T_tilde,A,B) 
+    
+    print(fr"{mass:.0f} kg, {frequency} Hz, $\beta$ {beta:.4f}, $\gamma$ {gamma:.4f}, Ste {Ste:.4f}" )
 
     if apply_heat_loss:
         V -= V_eloss_term(t,T,To,Tm, beta,gamma,Ste, rhow,Vo,cp,m,b)
@@ -952,7 +968,7 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
             fin = np.min( [np.where(mask1)[0][0], np.where(mask2)[0][0] ]) 
         else:
             fin = np.where(mask1)[0][0]
-        
+    else: fin = -1
 
     # Plot radius and volume over time (with this energy balance)
     if not gradient:
@@ -993,7 +1009,7 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
                       color='y',
                       linestyle='--', linewidth=1)
 
-    # Plot radius and volume over time (with this energy balance)
+    # Plot gradient if radius and volume over time 
     else:
         ax[1].plot(t[:fin], np.gradient(np.cbrt(Vsv),t)[:fin],
                  label=rf"{mass} kg, {frequency} Hz, ($T_{{\mathrm{{init}}}}$: {T_init:.2f}°C)",
@@ -1031,9 +1047,9 @@ else:
 # ax[1].set_title("Radius vs Time", fontsize=fsize)
 # ax[0].set_title("Volume vs Time", fontsize=fsize)
 
-ax[0].grid(True)
-ax[1].grid(True)
-ax[2].grid(True)
+for i in range(3):
+    ax[i].grid(True)
+    ax[i].set_ylim(-0.02,1.02)
 
 plt.tight_layout()
 # h, l = ax[1].get_legend_handles_labels()
@@ -1041,7 +1057,7 @@ plt.tight_layout()
 ax[1].legend(loc='upper center', ncols=5, bbox_to_anchor=(0.5, 1.2), fancybox=False, shadow=False, fontsize=fsize)
 fig.subplots_adjust(bottom=0.08, top=0.85)
 
-filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/experiemtns.pdf'
+filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/experiments.pdf'
 # plt.savefig(filename, dpi=200, bbox_inches='tight')
 
 plt.show()
@@ -1141,12 +1157,13 @@ Pr = nu/kappa
 
 model = 'old'
 
-compensate = 0
+compensate = 1
 
 umrss = {1:0.003957, 2:0.00817, 4:0.01844, 8:0.03881, 12:0.06663} #m/s, u_rms
 
 if   model == 'new': masses_bath = {5:117, 10:112, 20:102} 
-elif model == 'old': masses_bath = {5:126, 10:123, 20:120} # To work with old {5:126, 10:123, 20:119}
+elif model == 'old': masses_bath = {5:117, 10:112, 20:102} 
+# elif model == 'old': masses_bath = {5:126, 10:123, 20:120} # To work with old {5:126, 10:123, 20:119}
 
 # fig, ax = plt.subplots(1,2,figsize=(14,8) )
 fig, ax = plt.subplots(1,2,figsize=(15,5), sharey=False )
@@ -1180,7 +1197,7 @@ for i, label in enumerate(sorted(results.keys(), key=sort_key)):
 
     Vsv = savgol_filter(V, len(V)//4, 3)
     mask1 = np.gradient(Vsv)>0
-    mask2 = Vsv<0.5
+    mask2 = Vsv<0.3
     if np.sum(mask2)>0:
         fin = np.min( [np.where(mask1)[0][0], np.where(mask2)[0][0] ]) 
     else:
@@ -1256,8 +1273,8 @@ if compensate == 0:
     ax[0].set_ylabel(r"$\langle$Nu$\rangle$", fontsize=fsize)
     ax[1].set_ylabel(r'Nu(t)', fontsize=fsize)
 elif compensate == 1:
-    ax[0].set_ylabel(rf"$\langle$Nu$\rangle$ / $\langle$Re$\rangle$", fontsize=fsize)
-    ax[1].set_ylabel(rf'Nu(t) / Re(t) ', fontsize=fsize)
+    ax[0].set_ylabel(r"$\langle$Nu$\rangle$ / $\langle$Re$\rangle$", fontsize=fsize)
+    ax[1].set_ylabel(r'Nu(t) / Re(t) ', fontsize=fsize)
 else:
     ax[0].set_ylabel(rf"$\langle$Nu$\rangle$ / $\langle$Re$\rangle^{{1/{compensate}}}$", fontsize=fsize)
     ax[1].set_ylabel(rf'Nu(t) / Re(t)$^{{1/{compensate}}}$ ', fontsize=fsize)
@@ -1290,6 +1307,8 @@ plt.show()
 # Solution system
 # =============================================================================
 
+plt.rcParams.update({'font.size':13})
+
 def Rs(R,A,B, final_time=1e8):
     if B == 1:
         return (A+1)/(2*R**2) + A*R
@@ -1321,8 +1340,9 @@ def T_adim(R,A,B):
 
 
 numb = 100000
+size = 1.5
 
-fig, ax = plt.subplots(1,3, figsize=(15,5))
+fig, ax = plt.subplots(1,3, figsize=(15*size,5*size))
 # for B in [1.1]:
 for B in [0.1,0.5,0.9,0.99]:
     finb = np.cbrt( np.max([0,1-1/B]) )
@@ -1353,40 +1373,372 @@ ax[0].set_ylabel(r'$\tilde{R}$')
 ax[1].set_xlim(-0.2,12)
 ax[1].set_ylabel(r'$\tilde{V}$')
 ax[2].set_xlim(-0.1,6)
-ax[2].set_ylabel(r'$(T-T_m)/\Delta T$')
+ax[2].set_ylabel(r'$\tilde{T}$')
 
 plt.tight_layout()
 
 filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Solutions.pdf'
-plt.savefig(filename, dpi=400, bbox_inches='tight')
+# plt.savefig(filename, dpi=400, bbox_inches='tight')
+
+plt.show()
+
+#%%
+
+A = 1
+fitfun = lambda Temp,c,A,B: np.real( ( solution_R( R_of_T(Temp, A, B, set_tot_cero=False) , A, B) - solution_R(1, A, B) ) ) / c
+
+plt.figure()
+
+for B in [0.1,0.5,0.9,0.99]:
+    finb = np.cbrt( np.max([0,1-1/B]) )
+    R = np.linspace(1,finb,numb, endpoint=True)
+    # plt.plot( Rs(R,1,B) - Rs(R[:1],1,B), T_adim(R,A,B) , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+    plt.plot( Rs(R,1,B) - Rs(R[:1],1,B), fitfun( T_adim(R,A,B),1,A,B)  , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+
+R = np.linspace(1,0,numb) 
+# plt.plot( Rs(R,1,1) - Rs(R[:1],1,1), T_adim(R,A,1) , 'k--', label='B=1' ) 
+plt.plot( Rs(R,1,1) - Rs(R[:1],1,1), fitfun( T_adim(R,A,B),1,A,B) , 'k--', label='B=1' ) 
+
+for B in [1.02,1.2,2]:
+    finb = np.cbrt( np.max([0,1-1/B]) )
+    R = np.linspace(1,finb,numb, endpoint=True)
+    # plt.plot( Rs(R,1,B) - Rs(R[:1],1,B), T_adim(R,A,B) , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+    plt.plot( Rs(R,1,B) - Rs(R[:1],1,B), fitfun( T_adim(R,A,B),1,A,B) , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+
+
+plt.xlabel(r'$Ct$')
+plt.legend()
+plt.grid()
+
+plt.xlim(-0.1,10)
+plt.ylim(-0.1,10.1)
+
+plt.ylabel(r'$\tilde{T}$')
+plt.show()
+
+
+#%%
+# =============================================================================
+# Energy loss
+# =============================================================================
+
+def to_seconds(timestamps, fmt="%Y-%m-%d_%H.%M.%S.%f"):
+    t0 = datetime.strptime(str(timestamps[0]), fmt)
+    
+    times = []
+    for t in timestamps:
+        strt = str(t)
+        if len(strt) > 3: times.append( (datetime.strptime(str(t), fmt)-t0).total_seconds() )
+        elif len(strt) == 3: times.append(np.nan)
+
+    return np.array(times)
+
+def to_seconds_ambient(data, limits , fmt1="%Y-%m-%d_%H.%M.%S.%f", fmt2="%Y-%m-%d %H:%M:%S" ):
+    t_ini = datetime.strptime(limits[0], fmt1)
+    t_end = datetime.strptime(limits[1], fmt1)
+    
+    times, temps = [], []
+
+    for i in range(len(data)):
+        
+        t = data['Time'][i]
+        T = data['POF_ME201'][i]
+        strt = str(t)
+
+        if len(strt) > 3: 
+            tdata = datetime.strptime(strt, fmt2)
+            
+            if (t_ini<tdata) and (tdata<t_end) and ( isinstance(T, str) ):
+                times.append( (tdata-t_ini).total_seconds() )    
+                temps.append( float(T[:-4]) )
+    
+    return np.array(times), np.array(temps)
+
+def V_of_T(t, T, A,B,C):
+    bot = B + A*T
+    argum = 1 - (1-T)/bot 
+    loss = C * cumulative_trapezoid((1-T),t, initial=0)
+
+    return  argum - loss/bot
+
+def constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L, Hd, k ):
+    alpha = Hd / (rhow*Vo*cp)
+    beta = rhoi / rhow
+    gamma = Vb/Vo
+    kappa = k / (rhow*Vo*cp)
+    Ste = L / (cp * (To-Tm))
+
+    A = beta/(gamma+alpha)
+    B = A * Ste
+    C = kappa /(gamma+alpha)
+
+    return A,B,C, alpha,beta,gamma,kappa,Ste
+
+# Load files
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/Melting/Test1/measures/after-im-test1-4Hz.csv'
+df = pd.read_csv(file_path, delimiter=";", encoding="ISO-8859-1", header=0)
+
+# === Timestamp parsing ===
+df['Timestamp'] = pd.to_datetime(df["Timestamp"], format="%Y-%m-%d_%H.%M.%S.%f")
+df = df.sort_values(by="Timestamp")
+df.set_index("Timestamp", inplace=True)
+
+
+# === Setup ===
+folder_paths = [
+    '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test7-5kg-experiment/Temperature Recordings',
+    '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test5-10kg-experiment/Temperature Recordings',
+    '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test6-20kg/Temperature Recordings',
+]
+
+# Define which frequencies exist in which folder
+available_frequencies = {
+    "Test7-5kg-experiment": ["1Hz", "2Hz", "4Hz", "8Hz", "12Hz"],
+    "Test5-10kg-experiment": ["1Hz", "2Hz", "4Hz", "8Hz", "12Hz"],
+    "Test6-20kg": ["2Hz", "4Hz", "8Hz"],
+}
+
+frequencies = ["1Hz", "2Hz", "4Hz", "8Hz", "12Hz"]
+
+# Folder color bases
+folder_colors = {
+    "Test7-5kg-experiment": cm.Blues,
+    "Test5-10kg-experiment": cm.Greens,
+    "Test6-20kg": cm.Reds
+}
+
+
+# === Filter & Windowing Settings ===
+window_size = 50
+apply_savgol_filter = False
+savgol_window = 25
+savgol_polyorder = 2
+
+# === Scan Folders for Matching Files (robust & unique per frequency) ===
+file_paths = {}
+for folder in folder_paths:
+    folder_name = os.path.basename(os.path.dirname(folder)).strip()
+    freqs = available_frequencies.get(folder_name)
+    if freqs is None:
+        print(f"⚠️ Skipping unknown folder: {folder_name}")
+        continue
+
+    print(f"📁 Scanning {folder_name}: expected {freqs}")
+    seen_freqs = set()
+
+    for filename in os.listdir(folder):
+        filename_lower = filename.lower()
+        for freq in freqs:
+            pattern = rf'\b{freq.lower()}\b'  # match '2hz' as a whole word
+            if re.search(pattern, filename_lower) and freq not in seen_freqs:
+                label = f"{folder_name} {freq}"
+                full_path = os.path.join(folder, filename)
+                file_paths[label] = full_path
+                seen_freqs.add(freq)
+                print(f"  ✔ Found: {label}")
+                break  # stop checking more frequencies for this file
+
+# === Processing ===
+results = {}
+
+cut_at_min_rise = False # Toggle cut behavior
+min_rise_threshold = 0.15  # °C above minimum
+
+for label, path in file_paths.items():
+    try:
+        t, T_top = load_temperature_csv(path)
+
+        # Segment raw data after initial drop
+        t_seg, T_top_seg, T_top_init = get_post_drop_segment(t, T_top)
+
+        # Downsample to averaged data
+        t_avg = downsample_time(t_seg, window_size)
+        T_top_avg = average_per_window(T_top_seg, window_size)
+
+        # Match lengths
+        min_len = min(len(t_avg), len(T_top_avg))
+        valid_mask = ~np.isnan(T_top_avg)
+        t_avg = t_avg[valid_mask]
+        T_top_avg = T_top_avg[valid_mask]
+
+        # === Cut after a single rise from minimum ===
+        if cut_at_min_rise:
+            min_index = np.argmin(T_top_avg)
+            T_min = T_top_avg[min_index]
+
+            # Find the first index where the temp rises above threshold
+            above_thresh = np.where(T_top_avg[min_index + 1:] > T_min + min_rise_threshold)[0]
+
+            if len(above_thresh) > 0:
+                cut_index = min_index + 1 + above_thresh[0]  # get absolute index
+                t_avg = t_avg[:cut_index]
+                T_top_avg = T_top_avg[:cut_index]
+
+        # Optional smoothing
+        if apply_savgol_filter and len(T_top_avg) >= savgol_window:
+            T_top_avg = savgol_filter(T_top_avg, window_length=savgol_window, polyorder=savgol_polyorder)
+
+        # Store result
+        results[label] = {
+            "t_avg": t_avg,
+            "T_top_avg": T_top_avg,
+            "T_top_init": T_top_init,
+        }
+
+    except Exception as e:
+        print(f"⚠️ Skipping {label} due to error: {e}")
+
+
+#%%
+
+rhow, rhoi = 998.2, 916.8 # kg/m3
+Tm = 0 #°C
+L = 334000 # J/kg 
+cp = 4184 # J/(kg K)
+
+Hd = 500*100 # total heat capacity dodecahedron, J/K
+mw = 149 #149 # kg
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/Melting/Test1/measures/after-im-test1-4Hz.csv'
+df = pd.read_csv(file_path, delimiter=";", encoding="ISO-8859-1", header=0)
+
+file_temp = '/Volumes/ICESTOCKS/Ice Stocks/ME201-Temperatures/Temperature-data-2026-02-06 15_58_48.csv'
+data = pd.read_csv(file_temp, delimiter=",", encoding="ISO-8859-1", header=0)
+
+t_amb, T_amb = to_seconds_ambient(data, list(df["Timestamp"][[0,len(df)-40]]) )
+T_ambient = np.nanmean(T_amb)
+
+def sol_expo(t, b,c):
+    return T_ambient - (T_ambient-b) * np.exp(-c*t)
+
+print('Initial time: ', datetime.strptime(df["Timestamp"][0], "%Y-%m-%d_%H.%M.%S.%f") )
+print('End time: ', datetime.strptime(df["Timestamp"][227599-40], "%Y-%m-%d_%H.%M.%S.%f") )
+
+df['Timestamp'] = to_seconds(df["Timestamp"])
+ 
+t_cal = np.array(df["Timestamp"][620:])
+T_w_cal = np.array(df["Water bot °C"][620:])
+
+fil = np.isnan(t_cal)
+(b2,c2), _ = curve_fit(sol_expo, t_cal[~fil], T_w_cal[~fil], p0=(15,0) )
+print(f'T_ini = {b2:.2f} °C')
+print(f'C = {c2:.4} 1/s')
+print()
+k = c2 * (mw*cp + Hd)
+print(f'k = {k:.4} J/sK')
+# C = 2.0176737593739014e-05 1/s
+#k = 12.5785010437384 o  J/sK
+
+plt.figure()
+plt.plot( t_cal, T_w_cal,'b-', label=r'$T_{bath}$' )
+plt.plot( t_amb, T_amb, 'g.-', label=r'$T_{amb}$' )
+
+plt.plot( t_cal, sol_expo(t_cal,b2,c2), 'r--', label='fit' )
+
+plt.legend()
+plt.xlabel('time (s)')
+plt.ylabel('Temperature (°C)')
+
+filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/fit.pdf'
+# plt.savefig(filename, dpi=200, bbox_inches='tight')
+
+
+plt.show()
+
+#%%
+
+plot = 'vol' # 'temp' or 'vol'
+rhow, rhoi = 998.2, 916.8 # kg/m3
+Tm = 0 #°C
+L = 334000 # J/kg 
+cp = 4184 # J/(kg K)
+
+Hd = 500*100 # J/K, total heat capacity dodecahedron
+
+kd = k
+# k = 12.5785010437384 # J/sK, energy loss rate
+# k = 10.299175350967385 # J/sK, energy loss rate
+# k = 0 # J/sK, energy loss rate
+
+masses = {5:117, 10:112, 20:102} 
+
+plt.figure(figsize=(6, 8))
+# plt.figure()
+
+betas, gammas, stes, mints, minvs = [],[],[],[],[]
+for i, label in enumerate(sorted(results.keys(), key=sort_key)):
+    folder_name, freq = label.split()
+    data = results[label]
+
+    t = data["t_avg"]
+    T = data["T_top_avg"]
+    T_init = data["T_top_init"]
+
+    mass = float(re.split('-| ',label)[1][:-2])
+    frequ = int(re.split(' ',label)[1][:-2])
+    
+    Vo = mass / rhoi # m3
+    To = T_init #°C
+    Vb = masses[mass]/rhow #0.102 # m3        
+
+    A,B,C, alpha,beta,gamma,kappa,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L, Hd, kd )
+
+    T_tilde = (T-Tm)/(To-Tm)
+    V_tilde = V_of_T(t, T_tilde, A,B,C)
+    
+    # print(mass, np.min(V_tilde) )
+    # print(mass, gamma, alpha, gamma/alpha )
+
+    if plot == 'temp':
+        plt.plot(t, T_tilde, label=rf"{mass}kg, {frequ}Hz", color=get_color(folder_name, freq),
+                     linestyle='-', marker='o', markersize=8, markeredgecolor='black', linewidth=1)
+    elif plot == 'vol':
+        plt.plot(t, V_tilde, label=rf"{mass}kg, {frequ}Hz", color=get_color(folder_name, freq),
+                     linestyle='-', marker='o', markersize=8, markeredgecolor='black', linewidth=1)
+
+fsize = 10
+plt.xlabel(r"$t$ (s)", fontsize=fsize)
+plt.ylim(-0.05,1.05)
+
+if plot == 'temp': plt.ylabel(r"$\tilde{T}$", fontsize=fsize)
+elif plot == 'vol': plt.ylabel(r"$\tilde{V}$", fontsize=fsize)
+
+plt.grid(True)
+plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), title="Folder + Frequency", fontsize=fsize, ncols=1)
+plt.tight_layout()
+
+filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/volume_k_h100.pdf'
+plt.savefig(filename, dpi=200, bbox_inches='tight')
 
 plt.show()
 
 
-
-
-
-
-
+#%%
 
 
 
 
 #%%
 
+t = np.linspace(0,4)
+T = (t-2.5)**2 / (2.5)**2
+loss = cumulative_trapezoid(T,t,initial=0)
 
-
-
-
-
-
+plt.figure()
+plt.plot(t,T)
+plt.plot(t,loss)
+plt.grid()
+plt.show()
 
 #%%
+# tdf = datetime.strptime(df["Timestamp"][:2], "%Y-%m-%d_%H.%M.%S.%f")
+# tdata = datetime.strptime(data["Time"][:2], "%Y-%m-%d %H:%M:%S") 
 
 
 
-
-
+plt.figure()
+plt.plot(t_amb, T_amb, '.-')
+plt.show()
 
 
 

@@ -6,16 +6,224 @@ Created on Tue May 13 14:38:22 2025
 @author: tomasferreyrahauchar
 """
 import imageio.v2 as imageio
+import cv2
 from tqdm import tqdm
 from time import time
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-from skimage.morphology import remove_small_objects, binary_dilation, disk, skeletonize, binary_closing, remove_small_holes, binary_opening, binary_erosion
+# from skimage.morphology import remove_small_objects, binary_dilation, disk, skeletonize, binary_closing, remove_small_holes, binary_opening, binary_erosion
 from skimage.segmentation import mark_boundaries, felzenszwalb
-from skimage.filters import try_all_threshold, gaussian
+from skimage.filters import gaussian, roberts, sobel # try_all_threshold
+
+def normalize(im):
+    return (im - np.min(im)) / (np.max(im) - np.min(im))
+
 #%%
+# =============================================================================
+# Experiments seen from below
+# =============================================================================
+
+def background_import(file_path, file, colorconv=cv2.COLOR_BGR2GRAY , n_mean=1000):
+    bvid = cv2.VideoCapture(file_path+back_file+'.MP4') # 24fps, start 632
+    blen = int(bvid.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    bvid.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    f1 = bvid.read()[1]
+    ny,nx,_ = np.shape( f1 ) 
+        
+    bvid.set(cv2.CAP_PROP_POS_FRAMES, blen-n_mean)
+    
+    mean_frames = np.zeros( np.shape( cv2.cvtColor(f1, colorconv) )  )
+    
+    for i in tqdm(range(n_mean)):
+        frame = bvid.read()[1]
+        gray = cv2.cvtColor(frame, colorconv)
+        
+        mean_frames += gray    
+    
+    background = mean_frames / n_mean
+    return background, ny,nx
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/'
+back_file = 'GX020240'
+ccc = cv2.COLOR_BGR2YCrCb
+background, ny, nx = background_import(file_path, back_file, colorconv=ccc, n_mean=100)
+
+#%%
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/'
+file = 'GX010240'
+
+# vid1 = imageio.get_reader(file_path+file+'.MP4', 'ffmpeg') 
+vid = cv2.VideoCapture(file_path+file+'.MP4') # 24fps, start 632
+
+vlen = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
+
+print(vlen, ny,nx)
+
+
+
+#%%
+
+
+#%%
+
+# i = 632
+i = 2957
+
+vid.set(cv2.CAP_PROP_POS_FRAMES, i)
+
+
+N = 1
+alf = np.zeros((ny,nx,N))
+
+for i in range(N):
+    fr = vid.read()[1]
+
+    bb = np.round(background).astype('int')    
+
+    frame_gray = cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
+    frame_lab = cv2.cvtColor(fr, cv2.COLOR_BGR2LAB)
+    frame_hsv = cv2.cvtColor(fr, cv2.COLOR_BGR2HSV)
+
+    # framb = np.abs(frame - background)
+    # framb = np.abs( frame_lab - background )
+    # framb = np.abs( frame_gray - background )
+    
+    fb = frame_gray-bb
+    fb = (fb - np.min(fb)) / (np.max(fb) - np.min(fb)) *255
+    fb = np.round(fb).astype('int')    
+    
+    # gy,gx = np.gradient( gaussian(framb, 2.5) )
+    
+    # alf[:,:,i] = framb
+    
+    # plt.figure()
+    # plt.imshow( frame_gray, cmap='gray' )
+    # plt.show()
+    # plt.figure()
+    # plt.imshow( bb, cmap='gray' )
+    # plt.show()
+    # plt.figure()
+    # plt.imshow( fb , cmap='gray' )
+    # plt.show()
+
+    # plt.figure()
+    # plt.imshow( roberts(fr) )
+    # plt.show()
+    # plt.figure()
+    # plt.imshow( sobel(fr) )
+    # plt.show()
+
+    # plt.figure()
+    # plt.imshow( frame_gray, cmap='gray' )
+    # plt.show()  
+    
+    # plt.figure()
+    # # plt.imshow( frame_lab[:,:,0], cmap='gray' )
+    # # plt.imshow( background[:,:,0], cmap='gray' )
+    # plt.imshow( framb[:,:,0], cmap='gray' )
+    # plt.title('LAB-0')
+    # plt.show()    
+    # plt.figure()
+    # # plt.imshow( frame_lab[:,:,1], cmap='gray' )
+    # # plt.imshow( background[:,:,1], cmap='gray' )
+    # plt.imshow( framb[:,:,1], cmap='gray' )
+    # plt.title('LAB-1')
+    # plt.show()    
+    # plt.figure()
+    # # plt.imshow( frame_lab[:,:,2], cmap='gray' )
+    # # plt.imshow( background[:,:,2], cmap='gray' )
+    # plt.imshow( framb[:,:,2], cmap='gray' )
+    # plt.title('LAB-2')
+    # plt.show()    
+
+    plt.figure()
+    plt.imshow( frame_hsv[:,:,1], cmap='gray' )
+    plt.title('HSV')
+    plt.show()    
+
+    # plt.figure()
+    # plt.imshow( background, cmap='gray' )
+    # plt.show()
+    
+    # plt.figure()
+    # plt.imshow( framb, cmap='gray' )
+    # plt.show()
+    
+# plt.figure()
+# plt.imshow( framb > 20, cmap='gray' )
+# plt.show()
+
+# both = np.abs(gy) + np.abs(gy)
+
+# plt.figure()
+# plt.imshow( both , cmap='gray') #, vmax=5 )
+# plt.show()
+# # plt.figure()
+# # plt.imshow( np.abs(gx), cmap='gray', vmax=5 )
+# # plt.show()
+
+
+# plt.figure()
+# plt.imshow( np.std(alf,axis=2) )
+# plt.title(f'N = {N}')
+# plt.show()
+
+#%%
+
+convert = cv2.COLOR_BGR2YCrCb
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/'
+back_file = 'GX020240'
+background, ny, nx = background_import(file_path, back_file, colorconv=convert, n_mean=100 )
+
+#%%
+bb = np.round(background).astype('int')    
+
+frame_c = cv2.cvtColor(fr, convert)
+
+c = 0
+
+
+plt.figure()
+plt.imshow( frame_c[:,:,c], cmap='gray' )
+plt.show()
+plt.figure()
+plt.imshow( bb[:,:,c], cmap='gray' )
+plt.show()
+
+
+#%%
+
+# c = 1
+# # plt.figure()
+# # plt.imshow( gaussian(fb[:,:,c],3) - gaussian(fb[:,:,c],25) )
+# # # plt.imshow( fb[:,:,0] )
+# # plt.show()
+# # plt.figure()
+# # plt.imshow( normalize( roberts( gaussian(fb[:,:,c],5) ) ), vmax=.4 )
+# # plt.show()
+# plt.figure()
+# plt.imshow( normalize( sobel( gaussian(fb[:,:,c],1) ) ), vmax=.4 )
+# plt.show()
+# # plt.figure()
+# # plt.imshow( fb[:,:,2] )
+# # plt.show()
+
+c = 0
+plt.figure()
+# plt.imshow( frame_hsv[:,:,c], cmap='gray' )
+# plt.imshow( background[:,:,c], cmap='gray' )
+plt.imshow( np.abs(frame_hsv-background)[:,:,c], cmap='gray' )
+plt.title('HSV')
+plt.show()    
+
+#%%
+
+
 t1 = time()
 
 vid = imageio.get_reader('Documents/Dodecahedro/Calibration/HERO9 BLACK/GX010176.MP4', 'ffmpeg') # 5000 last frame
@@ -79,22 +287,7 @@ plt.show()
 
 
 #%%
-t1 = time()
 
-vid1 = imageio.get_reader('Documents/Dodecahedro/Calibration/HERO9 BLACK/GX010177.MP4', 'ffmpeg') # 16994 last frame, 24fps
-
-immed_np = []
-# for i in tqdm(range(30,200)):
-for i in tqdm(range(16300, 16400)):
-    fima = vid1.get_data(i)
-    immed_np.append( fima )
-
-immed_np = np.median( immed_np, axis=0 )
-
-t2 = time()
-print(t2-t1)
-
-# np.shape( immed )
 #%%
 
 for i in range(16616,16636,1):
