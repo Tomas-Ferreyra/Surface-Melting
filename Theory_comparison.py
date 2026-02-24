@@ -1422,6 +1422,15 @@ plt.show()
 # Energy loss
 # =============================================================================
 
+import numpy as np 
+import pandas as pd
+from tqdm import tqdm
+from datetime import datetime
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+import glob
+
+
 def to_seconds(timestamps, fmt="%Y-%m-%d_%H.%M.%S.%f"):
     t0 = datetime.strptime(str(timestamps[0]), fmt)
     
@@ -1474,120 +1483,6 @@ def constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L, Hd, k ):
 
     return A,B,C, alpha,beta,gamma,kappa,Ste
 
-# Load files
-file_path = '/Volumes/ICESTOCKS/Ice Stocks/Melting/Test1/measures/after-im-test1-4Hz.csv'
-df = pd.read_csv(file_path, delimiter=";", encoding="ISO-8859-1", header=0)
-
-# === Timestamp parsing ===
-df['Timestamp'] = pd.to_datetime(df["Timestamp"], format="%Y-%m-%d_%H.%M.%S.%f")
-df = df.sort_values(by="Timestamp")
-df.set_index("Timestamp", inplace=True)
-
-
-# === Setup ===
-folder_paths = [
-    '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test7-5kg-experiment/Temperature Recordings',
-    '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test5-10kg-experiment/Temperature Recordings',
-    '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test6-20kg/Temperature Recordings',
-]
-
-# Define which frequencies exist in which folder
-available_frequencies = {
-    "Test7-5kg-experiment": ["1Hz", "2Hz", "4Hz", "8Hz", "12Hz"],
-    "Test5-10kg-experiment": ["1Hz", "2Hz", "4Hz", "8Hz", "12Hz"],
-    "Test6-20kg": ["2Hz", "4Hz", "8Hz"],
-}
-
-frequencies = ["1Hz", "2Hz", "4Hz", "8Hz", "12Hz"]
-
-# Folder color bases
-folder_colors = {
-    "Test7-5kg-experiment": cm.Blues,
-    "Test5-10kg-experiment": cm.Greens,
-    "Test6-20kg": cm.Reds
-}
-
-
-# === Filter & Windowing Settings ===
-window_size = 50
-apply_savgol_filter = False
-savgol_window = 25
-savgol_polyorder = 2
-
-# === Scan Folders for Matching Files (robust & unique per frequency) ===
-file_paths = {}
-for folder in folder_paths:
-    folder_name = os.path.basename(os.path.dirname(folder)).strip()
-    freqs = available_frequencies.get(folder_name)
-    if freqs is None:
-        print(f"⚠️ Skipping unknown folder: {folder_name}")
-        continue
-
-    print(f"📁 Scanning {folder_name}: expected {freqs}")
-    seen_freqs = set()
-
-    for filename in os.listdir(folder):
-        filename_lower = filename.lower()
-        for freq in freqs:
-            pattern = rf'\b{freq.lower()}\b'  # match '2hz' as a whole word
-            if re.search(pattern, filename_lower) and freq not in seen_freqs:
-                label = f"{folder_name} {freq}"
-                full_path = os.path.join(folder, filename)
-                file_paths[label] = full_path
-                seen_freqs.add(freq)
-                print(f"  ✔ Found: {label}")
-                break  # stop checking more frequencies for this file
-
-# === Processing ===
-results = {}
-
-cut_at_min_rise = False # Toggle cut behavior
-min_rise_threshold = 0.15  # °C above minimum
-
-for label, path in file_paths.items():
-    try:
-        t, T_top = load_temperature_csv(path)
-
-        # Segment raw data after initial drop
-        t_seg, T_top_seg, T_top_init = get_post_drop_segment(t, T_top)
-
-        # Downsample to averaged data
-        t_avg = downsample_time(t_seg, window_size)
-        T_top_avg = average_per_window(T_top_seg, window_size)
-
-        # Match lengths
-        min_len = min(len(t_avg), len(T_top_avg))
-        valid_mask = ~np.isnan(T_top_avg)
-        t_avg = t_avg[valid_mask]
-        T_top_avg = T_top_avg[valid_mask]
-
-        # === Cut after a single rise from minimum ===
-        if cut_at_min_rise:
-            min_index = np.argmin(T_top_avg)
-            T_min = T_top_avg[min_index]
-
-            # Find the first index where the temp rises above threshold
-            above_thresh = np.where(T_top_avg[min_index + 1:] > T_min + min_rise_threshold)[0]
-
-            if len(above_thresh) > 0:
-                cut_index = min_index + 1 + above_thresh[0]  # get absolute index
-                t_avg = t_avg[:cut_index]
-                T_top_avg = T_top_avg[:cut_index]
-
-        # Optional smoothing
-        if apply_savgol_filter and len(T_top_avg) >= savgol_window:
-            T_top_avg = savgol_filter(T_top_avg, window_length=savgol_window, polyorder=savgol_polyorder)
-
-        # Store result
-        results[label] = {
-            "t_avg": t_avg,
-            "T_top_avg": T_top_avg,
-            "T_top_init": T_top_init,
-        }
-
-    except Exception as e:
-        print(f"⚠️ Skipping {label} due to error: {e}")
-
 
 #%%
 
@@ -1596,7 +1491,7 @@ Tm = 0 #°C
 L = 334000 # J/kg 
 cp = 4184 # J/(kg K)
 
-Hd = 500*100 # total heat capacity dodecahedron, J/K
+Hd = 34320 #500*100 # total heat capacity dodecahedron, J/K
 mw = 149 #149 # kg
 
 file_path = '/Volumes/ICESTOCKS/Ice Stocks/Melting/Test1/measures/after-im-test1-4Hz.csv'
@@ -1626,8 +1521,8 @@ print(f'C = {c2:.4} 1/s')
 print()
 k = c2 * (mw*cp + Hd)
 print(f'k = {k:.4} J/sK')
-# C = 2.0176737593739014e-05 1/s
-#k = 12.5785010437384 o  J/sK
+# C = 2.018e-05 1/s
+#k = 13.27 o  J/sK
 
 plt.figure()
 plt.plot( t_cal, T_w_cal,'b-', label=r'$T_{bath}$' )
@@ -1642,119 +1537,698 @@ plt.ylabel('Temperature (°C)')
 filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/fit.pdf'
 # plt.savefig(filename, dpi=200, bbox_inches='tight')
 
-
 plt.show()
 
 #%%
 
-plot = 'vol' # 'temp' or 'vol'
+# new heat loss coefficient
+cp = 4184 # J/(kg K)
+mw = 112 # kg
+Hd = 34320 # total heat capacity dodecahedron, J/K
+
+
+n = 0
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
+mes = '*heat-abs*'
+
+files = glob.glob( file_path + mes )
+
+
+df = pd.read_csv(files[n], delimiter=";", encoding="ISO-8859-1", header=0)
+
+file_temp = '/Volumes/ICESTOCKS/Ice Stocks/ME201-Temperatures/Temperature-data-2026-02-23 16_22_02.csv'
+data = pd.read_csv(file_temp, delimiter=",", encoding="ISO-8859-1", header=0)
+
+t_amb, T_amb = to_seconds_ambient(data, list(df["Timestamp"][[0,len(df)-100]]) )
+T_ambient = np.nanmean(T_amb)
+
+def sol_expo(t, b,c):
+    return T_ambient - (T_ambient-b) * np.exp(-c*t)
+
+print('Initial time: ', datetime.strptime(df["Timestamp"][0], "%Y-%m-%d_%H.%M.%S.%f") )
+print('End time: ', datetime.strptime(df["Timestamp"][len(df) - 100], "%Y-%m-%d_%H.%M.%S.%f") )
+
+df['Timestamp'] = to_seconds(df["Timestamp"])
+ 
+t_cal = np.array(df["Timestamp"][:])
+T_w_cal = np.array(df["Water bot °C"][:])
+
+
+fil = np.isnan(t_cal)
+(b2,c2), _ = curve_fit(sol_expo, t_cal[~fil], T_w_cal[~fil], p0=(15,0) )
+print(f'T_ini = {b2:.2f} °C')
+print(f'C = {c2:.4} 1/s')
+print()
+k = c2 * (mw*cp + Hd)
+print(f'k = {k:.4} J/sK')
+
+# n = 0,  C = 2.323e-05 1/s,  k = 11.68 J/sK
+# n = 1,  C = 2.332e-05 1/s,  k = 11.73 J/sK
+
+
+plt.figure()
+plt.plot( t_cal, T_w_cal,'b-', label=r'$T_{bath}$' )
+plt.plot( t_amb, T_amb, 'g.-', label=r'$T_{amb}$' )
+
+plt.plot( t_cal, sol_expo(t_cal,b2,c2), 'r--', label='fit' )
+# tall = np.linspace(0,1,10000) * 60**2 * 15
+# plt.plot( tall, sol_expo(tall,b2,c2), 'r--', label='fit' )
+
+plt.legend()
+plt.xlabel('time (s)')
+plt.ylabel('Temperature (°C)')
+
+plt.show()
+
+
+
+#%%
+# =============================================================================
+# Energy balance
+# =============================================================================
+
+import numpy as np 
+import pandas as pd
+from tqdm import tqdm
+from datetime import datetime
+import matplotlib.pyplot as plt
+from matplotlib import cm
+import glob
+from scipy.integrate import cumulative_trapezoid
+
+# from matplotlib import cm
+# from scipy.signal import savgol_filter
+# from scipy.optimize import curve_fit, least_squares
+# from scipy.stats import linregress
+
+def exp_convolution(t, T, beta):
+    """
+    Compute y(t) = ∫_0^t exp(-beta (t-τ)) T(τ) dτ
+
+    Parameters
+    ----------
+    t : 1D numpy array
+        Time array (must be uniformly spaced)
+    T : 1D numpy array
+        Signal values at times t
+    beta : float
+        Positive decay constant
+
+    Returns
+    -------
+    y : 1D numpy array
+        Convolution result
+    """
+    # beta = alpha * lam**2
+    t = np.asarray(t)
+    T = np.asarray(T)
+
+    dt = t[1] - t[0]
+    y = np.zeros_like(T)
+
+    # Exact discrete update for exponential kernel
+    decay = np.exp(-beta * dt)
+    coeff = (1 - decay) / beta
+
+    for n in range(len(t) - 1):
+        y[n+1] = decay * y[n] + coeff * T[n]
+
+    return y
+
+def bt_nm(lam,t,T, tdiff):
+    s = 2/lam
+    beta = tdiff * lam**2
+    ct = exp_convolution(t, T, beta)
+    t1 = np.exp(-beta*t) 
+    return s/(lam) * ( t1 - T + beta * ct )
+
+def energy_delayed(t,T, tdiff, N=1000):
+
+    lam = np.pi/2 * (1 + 2* np.arange(0,N)) 
+    mb = np.zeros_like(t)
+    for n in range(0,N):        
+        mbn = bt_nm(lam[n], t, T, tdiff) 
+        
+        mb += mbn
+        
+    return mb
+
+
+def to_seconds(timestamps, fmt="%Y-%m-%d_%H.%M.%S.%f"):
+    t0 = datetime.strptime(str(timestamps[0]), fmt)
+    
+    times = []
+    for t in timestamps:
+        strt = str(t)
+        if len(strt) > 3: times.append( (datetime.strptime(str(t), fmt)-t0).total_seconds() )
+        elif len(strt) == 3: times.append(np.nan)
+
+    return np.array(times)
+
+def constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L, Hd, k ):
+    alpha = Hd / (rhow*Vo*cp)
+    beta = rhoi / rhow
+    gamma = Vb/Vo
+    kappa = k / (rhow*Vo*cp)
+    Ste = L / (cp * (To-Tm))
+
+    A = beta/(gamma+alpha)
+    B = A * Ste
+    C = kappa /(gamma+alpha)
+    M = alpha / (gamma+alpha)
+
+    return A,B,C,M, alpha,beta,gamma,kappa,Ste    
+
+
+def rk4_sol(dt, A,B,C,D):
+    
+    def func(t,R):
+        top = B * (R**3 -1) + 1 + C/D * (R+t-1)
+        bot = A * (R**3 -1) - 1
+        return top/bot
+    
+    R_sol = [1]
+    t = [0]
+
+    # for n in range(1,len(t)):
+    while R_sol[-1] > 0:
+        
+        rn, tn = R_sol[n-1], t[-1]
+        k1 = func(tn, rn)
+        k2 = func(tn + dt/2, rn + k1 * dt/2)
+        k3 = func(tn + dt/2, rn + k2 * dt/2)
+        k4 = func(tn + dt, rn + k3 * dt)
+        
+        rnext = rn + dt/6 * (k1+2*k2+2*k3+k4)
+        
+        R_sol.append( rnext )
+        t.append( tn + dt )    
+    
+    return np.array(R_sol), np.array(t)
+
+def solution_R( R, A,B ):
+    pterm = A*R/B
+    prod = (A+B) / (6 * np.cbrt(B-1)**2 * np.cbrt(B)**4)
+    arcterm = 2*np.sqrt(3) * np.arctan( (1+2*R * np.cbrt(B/(B-1)) ) / np.sqrt(3) )
+    logterm = np.log( ( (np.cbrt(B-1) + np.cbrt(B)*R)**2 - np.cbrt(B-1) * np.cbrt(B) * R ) / (np.cbrt(B-1) - np.cbrt(B)*R )**2  )
+    return pterm + prod * (arcterm + logterm)
+
+
+def V_of_T(t,T, A,B,C):
+    t1 = 1 - (1-T)/(B+A*T)
+    inte = cumulative_trapezoid(1-T, t, initial=0)
+    return t1 - C/(B+A*T) * inte
+
+def V_of_T_d(t,T, A,B,C, M, tdiff, N=1000):
+    t1 = 1 - (1-T)/(B+A*T)
+    t2 = M * energy_delayed(t, T, tdiff, N=N) /(B+A*T)
+    inte = cumulative_trapezoid(1-T, t, initial=0)
+    return t1 + t2 - C/(B+A*T) * inte
+
+def energies(t,T, alpha,beta,gamma,kappa,Ste):
+    eb = 1-T
+    ed = alpha/gamma * (1-T)
+    el = kappa/gamma * cumulative_trapezoid(1-T, t, initial=0)
+
+    A = beta/(gamma+alpha)
+    B = A * Ste
+    C = kappa /(gamma+alpha)
+    V = V_of_T(t, T, A, B, C)
+    
+    elat = beta/gamma * Ste * (1-V)
+    emelt = beta/gamma (1-V) * T
+
+    return eb,ed,el, elat, emelt
+    
+def get_color(mass, freq):
+    folder_colors = {'5': cm.Blues, '10': cm.Greens, '20': cm.Reds }
+    frequencies = ['1','2','4','8','12']
+
+    cmap = folder_colors[mass]
+    freq_index = frequencies.index(freq)
+    return cmap(0.3 + 0.7 * freq_index / (len(frequencies) - 1))  # soft to dark
+
+
+starts = {'20,4':198, '20,2':139, '10,12':140, '10,8':95, '10,4':125, '10,2':240, '10,1':300, '5,12':165, '5,8':90, '5,4':130,
+          '5,2':170, '5,1':120, '20,1':160  }
+
+mass_bath = {'10':112, '5':117, '20':102}
+
 rhow, rhoi = 998.2, 916.8 # kg/m3
 Tm = 0 #°C
 L = 334000 # J/kg 
 cp = 4184 # J/(kg K)
 
-Hd = 500*100 # J/K, total heat capacity dodecahedron
-
-kd = k
-# k = 12.5785010437384 # J/sK, energy loss rate
-# k = 10.299175350967385 # J/sK, energy loss rate
-# k = 0 # J/sK, energy loss rate
-
-masses = {5:117, 10:112, 20:102} 
-
-plt.figure(figsize=(6, 8))
-# plt.figure()
-
-betas, gammas, stes, mints, minvs = [],[],[],[],[]
-for i, label in enumerate(sorted(results.keys(), key=sort_key)):
-    folder_name, freq = label.split()
-    data = results[label]
-
-    t = data["t_avg"]
-    T = data["T_top_avg"]
-    T_init = data["T_top_init"]
-
-    mass = float(re.split('-| ',label)[1][:-2])
-    frequ = int(re.split(' ',label)[1][:-2])
-    
-    Vo = mass / rhoi # m3
-    To = T_init #°C
-    Vb = masses[mass]/rhow #0.102 # m3        
-
-    A,B,C, alpha,beta,gamma,kappa,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L, Hd, kd )
-
-    T_tilde = (T-Tm)/(To-Tm)
-    V_tilde = V_of_T(t, T_tilde, A,B,C)
-    
-    # print(mass, np.min(V_tilde) )
-    # print(mass, gamma, alpha, gamma/alpha )
-
-    if plot == 'temp':
-        plt.plot(t, T_tilde, label=rf"{mass}kg, {frequ}Hz", color=get_color(folder_name, freq),
-                     linestyle='-', marker='o', markersize=8, markeredgecolor='black', linewidth=1)
-    elif plot == 'vol':
-        plt.plot(t, V_tilde, label=rf"{mass}kg, {frequ}Hz", color=get_color(folder_name, freq),
-                     linestyle='-', marker='o', markersize=8, markeredgecolor='black', linewidth=1)
-
-fsize = 10
-plt.xlabel(r"$t$ (s)", fontsize=fsize)
-plt.ylim(-0.05,1.05)
-
-if plot == 'temp': plt.ylabel(r"$\tilde{T}$", fontsize=fsize)
-elif plot == 'vol': plt.ylabel(r"$\tilde{V}$", fontsize=fsize)
-
-plt.grid(True)
-plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), title="Folder + Frequency", fontsize=fsize, ncols=1)
-plt.tight_layout()
-
-filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/volume_k_h100.pdf'
-plt.savefig(filename, dpi=200, bbox_inches='tight')
-
-plt.show()
-
+k = 11.7 # J/sK
+Hd = 34320 #J/K
+Tm = 0 #°C
 
 #%%
 
+To, Tm = 20,  0
+Vb = 102 / rhow
+Vo = 10 / rhoi
 
 
+A,B,C, alpha,beta,gamma,kappa,Ste = constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L, Hd, k )
 
-#%%
 
-t = np.linspace(0,4)
-T = (t-2.5)**2 / (2.5)**2
-loss = cumulative_trapezoid(T,t,initial=0)
+D = 0.001
+dt = 0.01
+
+rsol, t = rk4_sol(dt, A, B, C, D)    
+rsol0, t0 = rk4_sol(dt, A, B, 0, D)    
+
+
+rana = np.linspace(0,1,100) 
+tana = solution_R( rana, A, B) - solution_R( 1, A, B)
 
 plt.figure()
-plt.plot(t,T)
-plt.plot(t,loss)
+
+plt.plot(t / D, rsol**3, label='rk4')
+plt.plot(t0 / D, rsol0**3, label='rk4')
+
+plt.plot(tana / D, rana**3, '.', label='Analytic')
+
 plt.grid()
+plt.legend()
+plt.show()
+
+
+#%%
+# latest data
+
+# tdiff_st = 0.05 # 1/s (diffusivity time of 8.5 mm of steel , alpha/L^2 = (4/1e6) / (0.0085)**2 )
+tdiff_st = 1e-4 # 1/s (trying values )
+
+delayed = 0
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
+
+names = '*Hz.csv'
+
+file_name = glob.glob(file_path+names)
+
+avoid_mass = []
+
+plt.figure()
+
+for name in file_name:
+    splits = name[-20:].split('-')[-2:]     
+    mass, freq = splits[0][:-2], splits[1][:-6]
+
+    if mass not in avoid_mass:
+        start = starts[mass+','+freq]
+        color = get_color(mass, freq)
+    
+        df = pd.read_csv(name, delimiter=";", encoding="ISO-8859-1", header=0)    
+        df['Timestamp'] = to_seconds(df["Timestamp"])
+    
+        t = np.array(df["Timestamp"][:])
+        Tt = np.array(df["Water top °C"][:])
+        Tb = np.array(df["Water bot °C"][:])
+        
+        T0 = Tb[0] # °C
+        T = T0 + (Tt-Tt[0] + Tb-Tb[0] ) / 2
+        t, T = t[start:] - t[start], T[start:] 
+        
+        Vb = (mass_bath[mass] - 10.)/ rhow # m^3
+        V0 = 1.0 * float(mass) / rhoi # m^3
+    
+        A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, k )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, 0, k )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, 0 )    
+        
+        T_tilde = (T - Tm) / (T0-Tm)
+        if delayed:
+            V_tilde = V_of_T_d(t, T_tilde, A, B, C, M, tdiff_st, N=70)
+            m = (1 - V_tilde) * V0 * rhoi
+        else:
+            V_tilde = V_of_T(t, T_tilde, A, B, C)
+            m = (1 - V_tilde) * V0 * rhoi
+        
+        # plt.plot(t/60, T, '.-', color=color, label=f'{mass} kg, {freq} Hz')
+        # plt.plot(t/60, T_tilde, '.-', color=color, label=f'{mass} kg, {freq} Hz')
+
+        # plt.plot(t/60  , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+        
+        # lt = np.where(np.isnan(t))[0][0]
+        # plt.plot(t/ t[lt-1] , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+
+        plt.plot(t/60, m, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+
+plt.xlabel(r'$t$ (min)')
+# plt.ylabel(r'$T$ (°C)')
+plt.ylabel(r'$\tilde{V}$ (°C)')
+
+plt.legend()
+plt.grid()
+
 plt.show()
 
 #%%
-# tdf = datetime.strptime(df["Timestamp"][:2], "%Y-%m-%d_%H.%M.%S.%f")
-# tdata = datetime.strptime(data["Time"][:2], "%Y-%m-%d %H:%M:%S") 
-
-
+diff_st, L_st = 0.05 /1e6, 0.0085 # m^2/s , m (diffusivity of steel, and thickness of wall)
 
 plt.figure()
-plt.plot(t_amb, T_amb, '.-')
+
+# for name in file_name[0]:
+for name in [0]:
+    splits = file_name[name][-20:].split('-')[-2:]     
+    mass, freq = splits[0][:-2], splits[1][:-6]
+    
+    print(f'{mass} kg, {freq} Hz')
+
+    df = pd.read_csv(file_name[name], delimiter=";", encoding="ISO-8859-1", header=0)    
+    df['Timestamp'] = to_seconds(df["Timestamp"])
+
+    t = np.array(df["Timestamp"][:])
+
+    Tt = np.array(df["Water top °C"][:])
+    Tb = np.array(df["Water bot °C"][:])
+    
+    T0 = Tb[0]
+    T = T0 + (Tt-Tt[0] + Tb-Tb[0] ) / 2
+    
+    t, T = t[start:] - t[start], T[start:] 
+    
+    Vb = (mass_bath[mass] - 0.)/ rhow # m^3
+    V0 = 1.0 * float(mass) / rhoi # m^3
+
+    A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, k )    
+    # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, 0, k )    
+    # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, 0 )    
+    
+    T_tilde = (T - Tm) / (T0-Tm)
+
+    V_tilde = V_of_T(t, T_tilde, A, B, C)
+    V_tilde_d = V_of_T_d(t, T_tilde, A, B, C, M, diff_st, L_st, N=50)
+
+
+    # V_tilde_d100 = V_of_T_d(t, T_tilde, A, B, C, M, diff_st, L_st, N=50)
+    # V_tilde_d1000 = V_of_T_d(t, T_tilde, A, B, C, M, diff_st, L_st, N=1000)
+
+    # m = (1 - V_tilde) * V0 * rhoi
+
+    
+    # plt.plot( Tt - Tt[0], '.-')
+    # plt.plot( Tb - Tb[0], '.-')
+    # plt.plot( T - T[0], '.-')
+    
+    plt.plot(t/60, V_tilde, '.-', label=r'$\tilde{V}$')
+    plt.plot(t/60, V_tilde_d, '.-', label=r'$\tilde{V}_{delayed}$')
+
+    # plt.plot(t/60, V_tilde_d100 / V_tilde_d1000 , '.-', label=r'$\tilde{V}_{delayed}$')
+    
+    plt.title( f'{mass} kg, {fr} Hz' )
+
+plt.xlabel(r'$t$ (min)')
+plt.ylabel(r'$T$ (°C)')
+plt.grid()
+plt.legend()
+plt.show()
+
+
+#%%
+# old data
+
+k_old = 13.7 # J/sK
+tdiff_st = 0.05 # 1/s (diffusivity time of 8.5 mm of steel , alpha/L^2 = (4/1e6) / (0.0085)**2 )
+# tdiff_st = 1e-4 # 1/s (trying values )
+delayed = 0
+
+folder_paths = ['/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test7-5kg-experiment/Temperature Recordings/',
+                '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test5-10kg-experiment/Temperature Recordings/',
+                '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test6-20kg/Temperature Recordings/' ]
+indexes = {0:[1,-2,-4,-2], 1:[1,-2,-3,-2], 2:[-1,-10,-4,-2] }
+
+names = '*.csv'
+
+plt.figure()
+
+for j in range(len(folder_paths)):
+    file_name = glob.glob(folder_paths[j]+names)
+    indx = indexes[j]
+    for n in range(len(file_name)):
+
+        splits = file_name[n][:].split('-')
+        mass, freq = splits[indx[0]][:indx[1]], splits[indx[2]][:indx[3]]
+        
+        color = get_color(mass, freq)
+    
+        df = pd.read_csv(file_name[n], delimiter=";", encoding="ISO-8859-1", header=0)    
+        df['Timestamp'] = to_seconds(df["Timestamp"])
+    
+        t = np.array(df["Timestamp"][:])
+        Tt = np.array(df["Water top °C"][:])
+        Tb = np.array(df["Water bot °C"][:])
+        
+        T0 = Tb[0] # °C
+        T = T0 + (Tt-Tt[0] + Tb-Tb[0] ) / 2
+        t, T = t[start:] - t[start], T[start:] 
+        
+        Vb = (mass_bath[mass] - 0)/ rhow # m^3
+        V0 = 0.97 * float(mass) / rhoi # m^3
+    
+        A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, k_old )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, 0, k )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, 0 )    
+        
+        T_tilde = (T - Tm) / (T0-Tm)
+        if delayed:
+            V_tilde = V_of_T_d(t, T_tilde, A, B, C, M, tdiff_st, N=70)
+            m = (1 - V_tilde) * V0 * rhoi
+        else:
+            V_tilde = V_of_T(t, T_tilde, A, B, C)
+            m = (1 - V_tilde) * V0 * rhoi
+        
+        # plt.plot(t/60, T, '.-', color=color, label=f'{mass} kg, {freq} Hz')
+        # plt.plot(t/60, T_tilde, '.-', color=color, label=f'{mass} kg, {freq} Hz')
+
+        # plt.plot(t/60  , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+        
+        # lt = np.where(np.isnan(t))[0][0]
+        # plt.plot(t/ t[lt-1] , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+
+        plt.plot(t/60, m, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+
+plt.xlabel(r'$t$ (min)')
+# plt.ylabel(r'$T$ (°C)')
+plt.ylabel(r'$\tilde{V}$ (°C)')
+
+plt.legend()
+plt.grid()
+
+plt.show()
+
+#%%
+
+# all data
+
+# tdiff_st = 0.05 # 1/s (diffusivity time of 8.5 mm of steel , alpha/L^2 = (4/1e6) / (0.0085)**2 )
+tdiff_st = 1e5 # 1/s (trying values )
+
+delayed = 1
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
+
+names = '*Hz.csv'
+
+file_name = glob.glob(file_path+names)
+
+avoid_mass = []
+
+plt.figure()
+
+for name in file_name:
+    splits = name[-20:].split('-')[-2:]     
+    mass, freq = splits[0][:-2], splits[1][:-6]
+
+    if mass not in avoid_mass:
+        start = starts[mass+','+freq]
+        color = get_color(mass, freq)
+    
+        df = pd.read_csv(name, delimiter=";", encoding="ISO-8859-1", header=0)    
+        df['Timestamp'] = to_seconds(df["Timestamp"])
+    
+        t = np.array(df["Timestamp"][:])
+        Tt = np.array(df["Water top °C"][:])
+        Tb = np.array(df["Water bot °C"][:])
+        
+        T0 = Tb[0] # °C
+        T = T0 + (Tt-Tt[0] + Tb-Tb[0] ) / 2
+        t, T = t[start:] - t[start], T[start:] 
+        
+        Vb = (mass_bath[mass] - 10.)/ rhow # m^3
+        V0 = 1.0 * float(mass) / rhoi # m^3
+    
+        A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, k )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, 0, k )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, 0 )    
+        
+        T_tilde = (T - Tm) / (T0-Tm)
+        if delayed:
+            V_tilde = V_of_T_d(t, T_tilde, A, B, C, M, tdiff_st, N=70)
+            m = (1 - V_tilde) * V0 * rhoi
+        else:
+            V_tilde = V_of_T(t, T_tilde, A, B, C)
+            m = (1 - V_tilde) * V0 * rhoi
+        
+        # plt.plot(t/60, T, '.-', color=color, label=f'{mass} kg, {freq} Hz')
+        # plt.plot(t/60, T_tilde, '.-', color=color, label=f'{mass} kg, {freq} Hz')
+
+        # plt.plot(t/60  , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+        
+        # lt = np.where(np.isnan(t))[0][0]
+        # plt.plot(t/ t[lt-1] , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+
+        plt.plot(t/60, m, '.', color=color,  label=f'{mass} kg, {freq} Hz', mfc='none', markersize=10)
+
+
+folder_paths = ['/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test7-5kg-experiment/Temperature Recordings/',
+                '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test5-10kg-experiment/Temperature Recordings/',
+                '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test6-20kg/Temperature Recordings/' ]
+indexes = {0:[1,-2,-4,-2], 1:[1,-2,-3,-2], 2:[-1,-10,-4,-2] }
+
+names = '*.csv'
+
+
+for j in range(len(folder_paths)):
+    file_name = glob.glob(folder_paths[j]+names)
+    indx = indexes[j]
+    for n in range(len(file_name)):
+
+        splits = file_name[n][:].split('-')
+        mass, freq = splits[indx[0]][:indx[1]], splits[indx[2]][:indx[3]]
+        
+        color = get_color(mass, freq)
+    
+        df = pd.read_csv(file_name[n], delimiter=";", encoding="ISO-8859-1", header=0)    
+        df['Timestamp'] = to_seconds(df["Timestamp"])
+    
+        t = np.array(df["Timestamp"][:])
+        Tt = np.array(df["Water top °C"][:])
+        Tb = np.array(df["Water bot °C"][:])
+        
+        T0 = Tb[0] # °C
+        T = T0 + (Tt-Tt[0] + Tb-Tb[0] ) / 2
+        t, T = t[start:] - t[start], T[start:] 
+        
+        Vb = (mass_bath[mass] + 0)/ rhow # m^3
+        V0 = 0.97 * float(mass) / rhoi # m^3
+    
+        A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, k )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, 0, k )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, 0 )    
+        
+        T_tilde = (T - Tm) / (T0-Tm)
+        if delayed:
+            V_tilde = V_of_T_d(t, T_tilde, A, B, C, M, tdiff_st, N=70)
+            m = (1 - V_tilde) * V0 * rhoi
+        else:
+            V_tilde = V_of_T(t, T_tilde, A, B, C)
+            m = (1 - V_tilde) * V0 * rhoi
+        
+        # plt.plot(t/60, T, '.-', color=color, label=f'{mass} kg, {freq} Hz')
+        # plt.plot(t/60, T_tilde, '.-', color=color, label=f'{mass} kg, {freq} Hz')
+
+        # plt.plot(t/60  , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+        
+        # lt = np.where(np.isnan(t))[0][0]
+        # plt.plot(t/ t[lt-1] , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+
+        plt.plot(t/60, m, '--', color=color,  label=f'{mass} kg, {freq} Hz')
+
+
+plt.xlabel(r'$t$ (min)')
+# plt.ylabel(r'$T$ (°C)')
+plt.ylabel(r'$\tilde{V}$ (°C)')
+
+plt.legend()
+plt.grid()
+
 plt.show()
 
 
 
+#%%
+# Test for calculating Hd
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Heat transfers-capacity tests/2026-02-09_16.18.28-T-im-system_temp_drop.csv'
+df = pd.read_csv(file_path, delimiter=";", encoding="ISO-8859-1", header=0)
+
+df['Timestamp'] = to_seconds(df["Timestamp"])
+ 
+t_hd = np.array(df["Timestamp"][:])
+T_hd = np.array(df["Water bot °C"][:])
+
+plt.figure()
+plt.plot(t_hd, T_hd, '.-')
+plt.xlabel('t (sec)')
+plt.ylabel('T (°C)')
+plt.show()
 
 
+#%%
+save = 0
+
+savepath = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/'
+savename = 'old_vs_new.pdf'
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
+# name = '2026-02-17_09.38.38-T-im-20kg-1Hz.csv'
+names = [ '*T-im-10kg-2Hz.csv', '*T-im-10kg-4Hz.csv', '*T-im-10kg-8Hz.csv' ]
+
+plt.figure()
+for name in names: 
+                
+    file_name = glob.glob(file_path+name)
+    
+    df = pd.read_csv(file_name[0], delimiter=";", encoding="ISO-8859-1", header=0)    
+    df['Timestamp'] = to_seconds(df["Timestamp"])
+     
+    t_hd = np.array(df["Timestamp"][:])
+    # T_hd = np.array(df["Water bot °C"][:])
+    T_hd = np.array(df["Water top °C"][:])
+    T_hd = T_hd-T_hd[0]  
+    
+    plt.plot(t_hd / 60, T_hd, '.-', label=f'New: {name[-7]} Hz' )
+    # plt.plot( T_hd, '.-', label=f'{name[-7]} Hz' )
+# plt.xlabel('t (min)')
+# plt.ylabel('T (°C)')
+# plt.legend()
+# plt.show()
 
 
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test5-10kg-experiment/Temperature Recordings/'
+# name = '2026-02-17_09.38.38-T-im-20kg-1Hz.csv'
+names = [ '*2Hz*', '*4Hz*', '*8Hz*' ]
 
+# plt.figure()
+for name in names: 
+                
+    file_name = glob.glob(file_path+name)
+    
+    print('name:', file_name)
+    
+    df = pd.read_csv(file_name[0], delimiter=";", encoding="ISO-8859-1", header=0)
+    
+    df['Timestamp'] = to_seconds(df["Timestamp"])
 
-
-
-
-
-
-
-
+     
+    t_hd = np.array(df["Timestamp"][:])
+    # T_hd = np.array(df["Water bot °C"][:])
+    T_hd = np.array(df["Water top °C"][:])
+    T_hd = T_hd-T_hd[0]  
+    
+    plt.plot(t_hd / 60, T_hd, '--', label=f'Old: {name[-4]} Hz' )
+    # plt.plot( T_hd, '.-', label=f'{name[-7]} Hz' )
+plt.xlabel('t (min)')
+plt.ylabel('T (°C)')
+plt.legend()
+plt.ylim(11.5-21, 21-21)
+plt.grid()
+if save: plt.savefig(savepath+savename, dpi=200, bbox_inches='tight')
+plt.show()
 
 
 
