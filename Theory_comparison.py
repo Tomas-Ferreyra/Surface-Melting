@@ -1762,7 +1762,7 @@ def energies(t,T, alpha,beta,gamma,kappa,Ste):
     return eb,ed,el, elat, emelt
     
 def get_color(mass, freq):
-    folder_colors = {'5': cm.Blues, '10': cm.Greens, '20': cm.Reds }
+    folder_colors = {'5': cm.Blues, '10': cm.Greens, '20': cm.Reds, '15': cm.Greys }
     frequencies = ['1','2','4','8','12']
 
     cmap = folder_colors[mass]
@@ -1771,9 +1771,9 @@ def get_color(mass, freq):
 
 
 starts = {'20,4':198, '20,2':139, '10,12':140, '10,8':95, '10,4':125, '10,2':240, '10,1':300, '5,12':165, '5,8':90, '5,4':130,
-          '5,2':170, '5,1':120, '20,1':160  }
+          '5,2':170, '5,1':120, '20,1':160, '20,12':30, '20,8':35, '15,4':0 }
 
-mass_bath = {'10':112, '5':117, '20':102}
+mass_bath = {'10':112, '5':117, '20':102, '15':107}
 
 rhow, rhoi = 998.2, 916.8 # kg/m3
 Tm = 0 #°C
@@ -1829,6 +1829,7 @@ file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experim
 names = '*Hz.csv'
 
 file_name = glob.glob(file_path+names)
+# file_name = file_name[:13]+file_name[14:]
 
 avoid_mass = []
 
@@ -1856,9 +1857,9 @@ for name in file_name:
         Vb = (mass_bath[mass] - 10.)/ rhow # m^3
         V0 = 1.0 * float(mass) / rhoi # m^3
     
-        A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, k )    
-        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, 0, k )    
-        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, 0 )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, Hd, k )    
+        A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, 0, k )    
+        # A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0, Vb, rhoi, rhow, cp, L, 500*120, k )    
         
         T_tilde = (T - Tm) / (T0-Tm)
         if delayed:
@@ -1871,16 +1872,16 @@ for name in file_name:
         # plt.plot(t/60, T, '.-', color=color, label=f'{mass} kg, {freq} Hz')
         # plt.plot(t/60, T_tilde, '.-', color=color, label=f'{mass} kg, {freq} Hz')
 
-        # plt.plot(t/60  , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+        plt.plot(t/60  , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
         
         # lt = np.where(np.isnan(t))[0][0]
         # plt.plot(t/ t[lt-1] , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
 
-        plt.plot(t/60, m, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
+        # plt.plot(t/60, m , '.-', color=color,  label=f'{mass} kg, {freq} Hz')
 
 plt.xlabel(r'$t$ (min)')
 # plt.ylabel(r'$T$ (°C)')
-plt.ylabel(r'$\tilde{V}$ (°C)')
+plt.ylabel(r'$\tilde{V}$')
 
 plt.legend()
 plt.grid()
@@ -1888,12 +1889,13 @@ plt.grid()
 plt.show()
 
 #%%
-diff_st, L_st = 0.05 /1e6, 0.0085 # m^2/s , m (diffusivity of steel, and thickness of wall)
+# diff_st, L_st = 0.05 /1e6, 0.0085 # m^2/s , m (diffusivity of steel, and thickness of wall)
+tdiff_st = 0.0553 # 1/s (trying values )
 
 plt.figure()
 
 # for name in file_name[0]:
-for name in [0]:
+for name in [15]:
     splits = file_name[name][-20:].split('-')[-2:]     
     mass, freq = splits[0][:-2], splits[1][:-6]
     
@@ -1922,7 +1924,7 @@ for name in [0]:
     T_tilde = (T - Tm) / (T0-Tm)
 
     V_tilde = V_of_T(t, T_tilde, A, B, C)
-    V_tilde_d = V_of_T_d(t, T_tilde, A, B, C, M, diff_st, L_st, N=50)
+    V_tilde_d = V_of_T_d(t, T_tilde, A, B, C, M, tdiff_st, N=50)
 
 
     # V_tilde_d100 = V_of_T_d(t, T_tilde, A, B, C, M, diff_st, L_st, N=50)
@@ -1935,12 +1937,14 @@ for name in [0]:
     # plt.plot( Tb - Tb[0], '.-')
     # plt.plot( T - T[0], '.-')
     
-    plt.plot(t/60, V_tilde, '.-', label=r'$\tilde{V}$')
-    plt.plot(t/60, V_tilde_d, '.-', label=r'$\tilde{V}_{delayed}$')
+    # plt.plot(t/60, V_tilde, '.-', label=r'$\tilde{V}$')
+    # plt.plot(t/60, V_tilde_d, '.-', label=r'$\tilde{V}_{delayed}$')
+    plt.plot( V_tilde, '.-', label=r'$\tilde{V}$')
+    plt.plot( V_tilde_d, '.-', label=r'$\tilde{V}_{delayed}$')
 
     # plt.plot(t/60, V_tilde_d100 / V_tilde_d1000 , '.-', label=r'$\tilde{V}_{delayed}$')
     
-    plt.title( f'{mass} kg, {fr} Hz' )
+    plt.title( f'{mass} kg, {freq} Hz' )
 
 plt.xlabel(r'$t$ (min)')
 plt.ylabel(r'$T$ (°C)')
@@ -2028,13 +2032,14 @@ plt.show()
 # tdiff_st = 0.05 # 1/s (diffusivity time of 8.5 mm of steel , alpha/L^2 = (4/1e6) / (0.0085)**2 )
 tdiff_st = 1e5 # 1/s (trying values )
 
-delayed = 1
+delayed = 0
 
 file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
 
 names = '*Hz.csv'
 
 file_name = glob.glob(file_path+names)
+file_name = file_name[:13]+file_name[14:]
 
 avoid_mass = []
 
@@ -2082,7 +2087,7 @@ for name in file_name:
         # lt = np.where(np.isnan(t))[0][0]
         # plt.plot(t/ t[lt-1] , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
 
-        plt.plot(t/60, m, '.', color=color,  label=f'{mass} kg, {freq} Hz', mfc='none', markersize=10)
+        plt.plot((t/60)[::50], m[::50], '.', color=color,  label=f'{mass} kg, {freq} Hz', mfc='none', markersize=10)
 
 
 folder_paths = ['/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Test7-5kg-experiment/Temperature Recordings/',
@@ -2137,15 +2142,20 @@ for j in range(len(folder_paths)):
         # lt = np.where(np.isnan(t))[0][0]
         # plt.plot(t/ t[lt-1] , V_tilde, '.-', color=color,  label=f'{mass} kg, {freq} Hz')
 
-        plt.plot(t/60, m, '--', color=color,  label=f'{mass} kg, {freq} Hz')
+        plt.plot((t/60)[::50], m[::50], '--', color=color,  label=f'{mass} kg, {freq} Hz')
 
 
 plt.xlabel(r'$t$ (min)')
 # plt.ylabel(r'$T$ (°C)')
 plt.ylabel(r'$\tilde{V}$ (°C)')
 
-plt.legend()
+# plt.legend( loc=[1.1,0.0], ncols=2)
+# plt.tight_layout()
 plt.grid()
+
+savepath = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/'
+savename = 'old_v_new(n_corr).pdf'
+# plt.savefig(savepath+savename, dpi=200, bbox_inches='tight')
 
 plt.show()
 
