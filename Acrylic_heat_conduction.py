@@ -196,7 +196,8 @@ k_loss = 12.58 * (1 + Hd/(cpw*112) ) #J/(s K)
 
 
 diff_ai, diff_ac = 19 / 1e6, 0.12 / 1e6 # mm^2/s (/1e6 to make it m^2/), diffusivity air and acrylic
-k_ai, k_ac = 0.024, 0.19 # W/(m K), conductivity
+# k_ai, k_ac = 0.024, 0.19 # W/(m K), conductivity
+k_ai, k_ac = 0.0, 0.0 # W/(m K), conductivity
 
 h_ai, h_ac = 10, 300 # W/(m^2 K)
 # h_ai, h_ac = 1e10, 1e10 # W/(m^2 K)
@@ -275,16 +276,16 @@ plt.show()
 
 #%%
 # Sols heat eq
-save = 0
+save = 1
 filepath = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/E_balance/'
 
 h_ai, h_ac = 10, 300 # W/(m^2 K)
-# h_ai, h_ac = 1e16, 1e16 # W/(m^2 K)
+# h_ai, h_ac = 1e4, 1e4 # W/(m^2 K)
 
 diff_ai, diff_ac = 19 / 1e6, 0.12 / 1e6 # mm^2/s (/1e6 to make it m^2/), diffusivity air and acrylic
 
-# k_ai, k_ac = 0.024, 0.19 # W/(m K), conductivity
-k_ai, k_ac = 0.0, 0 # W/(m K), conductivity
+k_ai, k_ac = 0.024, 0.19 # W/(m K), conductivity
+# k_ai, k_ac = 0.0, 0 # W/(m K), conductivity
 
 L1_ai, L2_ai, L_ac = 0.03, 0.3, 0.05 # m, thickness of air layer or acrylic
 
@@ -406,7 +407,202 @@ if calc:
 
 
 #%%
+# =============================================================================
+# show all energies for a single experiment
+# =============================================================================
+import glob
+import pandas as pd
+from datetime import datetime
 
+def to_seconds(timestamps, fmt="%Y-%m-%d_%H.%M.%S.%f"):
+    t0 = datetime.strptime(str(timestamps[0]), fmt)
+    
+    times = []
+    for t in timestamps:
+        strt = str(t)
+        if len(strt) > 3: times.append( (datetime.strptime(str(t), fmt)-t0).total_seconds() )
+        elif len(strt) == 3: times.append(np.nan)
+
+    return np.array(times)
+
+
+starts = {'20,4':198, '20,2':139, '10,12':140, '10,8':95, '10,4':125, '10,2':240, '10,1':300, '5,12':165, '5,8':90, '5,4':130,
+          '5,2':170, '5,1':120, '20,1':160, '20,12':30, '20,8':35, '15,4':0 }
+
+mass_ice = {'5,1':4.992, '5,2':4.997, '5,4':5.009, '5,8':5.011, '5,12':5.024, '10,1':4.977+5.015, '10,2':5.037+5.006, '10,4':5.011+5.036, 
+            '10,8':5.013+5.024, '10,12':4.997+5.008, '20,1':5.015+4.970+4.965+4.949, '20,2':5.015+4.970+4.965+4.949, '20,4':5.016+5.015+5.001+4.987, 
+            '20,8':5.052+5.021+5.013+4.931, '20,12':5.011+5.023+5.010+5.010}
+
+#------ Thermocuple calibration ------ 
+def temperature_calibration( fit_deg ):
+    file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Cal thermo/calibration_pt104.csv'
+    df = pd.read_csv(file_path, delimiter=",", encoding="ISO-8859-1", header=0)
+    t_pt100, T_pt100 = to_seconds(df['Unnamed: 0'], fmt="%H:%M:%S"), np.array(df['Channel 1 Ave. (C)'])
+    
+    file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Cal thermo/2026-03-13_14.59.48.csv'
+    df = pd.read_csv(file_path, delimiter=";", encoding="ISO-8859-1", header=0)
+    df['Timestamp'] = to_seconds(df["Timestamp"], fmt="%Y-%m-%d_%H.%M.%S.%f")
+    t_th = np.array(df["Timestamp"][:]) + 48
+    Tb_th, Tt_th = np.array(df["Water bot °C"][:]), np.array(df["Water top °C"][:])
+    Tmean_th = ( Tb_th + Tt_th ) / 2
+    
+    T_pi_int = np.interp(t_th, t_pt100, T_pt100)
+    end_stair = 308 * 60
+    fil_th = t_th < end_stair 
+
+    fit_mean = np.polyfit( Tmean_th[fil_th], T_pi_int[fil_th], fit_deg)
+    return fit_mean
+    
+def correct_temperature( T_mean, coeffs ):
+    return np.polyval(coeffs, T_mean )
+
+calibration_deg = 2
+coeffs_cal = temperature_calibration( calibration_deg )
+correct_temp = lambda T_mean: correct_temperature( T_mean, coeffs_cal )
+#-------------
+
+def get_temp( name, start, temp_correction=1 ):
+    df = pd.read_csv(name, delimiter=";", encoding="ISO-8859-1", header=0)    
+    df['Timestamp'] = to_seconds(df["Timestamp"])
+
+    t = np.array(df["Timestamp"][:])
+    Tt = np.array(df["Water top °C"][:])
+    Tb = np.array(df["Water bot °C"][:])
+
+    if temp_correction:
+        Tmean = correct_temp( (Tt + Tb) / 2 )
+        t, T = t[start:] - t[start], Tmean[start:] 
+        T0 = T[0]
+
+    else:
+        T0 = Tb[0] # °C # maybe should use Tt
+        T = T0 + (Tt-Tt[0] + Tb-Tb[0] ) / 2
+        t, T = t[start:] - t[start], T[start:] 
+        
+    return t, T
+
+#%%
+filepath = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/E_balance/'
+save = 0
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
+names = '*Hz.csv'
+
+file_name = glob.glob(file_path+names)
+
+show_mass = '20'
+show_freq = '4'
+
+for name in file_name:
+    splits = name[-20:].split('-')[-2:]     
+    mass, freq = splits[0][:-2], splits[1][:-6]
+    
+    if (mass == show_mass) and (freq == show_freq):
+        start = starts[mass+','+freq]
+        icemass = mass_ice[mass+','+freq]
+        
+        t, T = get_temp(name, start, temp_correction=1)
+        T0 = T[0]
+        T = (T - 0) / (T0 - 0)
+
+
+name = 'temperature_profile-'+show_mass+'kg-'+show_freq+'Hz'
+plt.figure()
+plt.plot( t/60 , T * T0)
+plt.xlabel('t (min)')
+plt.ylabel('T(t) (°C)')
+if save: plt.savefig(filepath+name+'.pdf', dpi=200, bbox_inches='tight')
+plt.show()
+
+cpw, cpai, cpac, cpi = 4184, 1005, 1466, 2110 # J/(kg K)
+Hd = 34320 # J/K, total heat capacity of dodecahedron
+rhow, rhoi, rhoai, rhoac = 998.2, 916.8, 1.225, 1180  # kg/m3
+latent = 334000 # J/kg 
+
+Vb, V0 = 102/rhow, icemass / rhoi
+k_loss = 12.58 * (1 + Hd/(cpw*112) ) #J/(s K)
+
+
+diff_ai, diff_ac = 19 / 1e6, 0.12 / 1e6 # mm^2/s (/1e6 to make it m^2/), diffusivity air and acrylic
+# k_ai, k_ac = 0.024, 0.19 # W/(m K), conductivity
+k_ai, k_ac = 0.0, 0.0 # W/(m K), conductivity
+
+# h_ai, h_ac = 10, 300 # W/(m^2 K)
+h_ai, h_ac = 1e10, 1e10 # W/(m^2 K)
+
+L1_ai, L2_ai, L_ac = 0.03, 0.3, 0.16 # m, thickness of air layer or acrylic
+Ar_ai = 0.36 # m^2
+m_ac = 8 * 2.6 # kg
+Tice = -1 #°C , initial ice temp 
+
+#Without prefactors 
+Ebath = energy_bath(t, T)
+Edodec = energy_bath(t, T)
+Eloss = energy_loss(t, T) / 5000
+
+Eair_lid =  energy_delayed(t, T, 5000, diff_ai, k_ai/h_ai, L1_ai )
+Eair_nlid = energy_delayed(t, T, 5000, diff_ai, k_ai/h_ai, L2_ai )
+Eac = energy_delayed(t, T, 5000, diff_ac, k_ac/h_ac, L_ac )
+
+# name = 'Energies (only time dependance)'
+# plt.figure()
+# plt.plot(t, Ebath, label=r'$E_{bath}$')
+# plt.plot(t, Edodec, label=r'$E_{dodec}$')
+# plt.plot(t, Eloss, label=r'$E_{loss} \, / \, 5000$')
+# plt.plot(t, Eair_lid, label=r'$E_{air}$ (with lid)')
+# plt.plot(t, Eair_nlid, label=r'$E_{air}$ (without lid)')
+# plt.plot(t, Eac, label=r'$E_{acrylic}$')
+# plt.xlabel(r'$t$ (seg)')
+# plt.ylabel(r'$E/(\rho_w \, V_b \, c_{p,w} ))$')
+# plt.legend()
+# if save: plt.savefig(filepath+name+'.pdf', dpi=200, bbox_inches='tight')
+# plt.show()
+
+#With prefactors 
+Ebath = energy_bath(t, T)
+Edodec = Hd/(rhow*Vb*cpw) * energy_bath(t, T)
+Eloss = k_loss/(rhow*Vb*cpw) * energy_loss(t, T)
+
+Eair_lid = (rhoai*Ar_ai*L1_ai*cpai)/(rhow*Vb*cpw) * energy_delayed(t, T, 5000, diff_ai, k_ai/h_ai, L1_ai )
+Eair_nlid = (rhoai*Ar_ai*L2_ai*cpai)/(rhow*Vb*cpw) * energy_delayed(t, T, 5000, diff_ai, k_ai/h_ai, L2_ai )
+Eac = (m_ac*cpac)/(rhow*Vb*cpw) * energy_delayed(t, T, 5000, diff_ac, k_ac/h_ac, L_ac )
+
+dimension = rhow * Vb * cpw / 1000
+name = 'Adimensional_energies-'+show_mass+'kg-'+show_freq+'Hz'
+plt.figure()
+plt.plot(t, Ebath *dimension, label=r'$E_{bath}$')
+plt.plot(t, Edodec *dimension, label=r'$E_{dodec}$')
+plt.plot(t, Eloss *dimension, label=r'$E_{loss}$')
+# plt.plot(t, Eair_lid *dimension, label=r'$E_{air}$ (with lid)')
+# plt.plot(t, Eair_nlid *dimension, label=r'$E_{air}$ (without lid)')
+plt.plot(t, Eair_nlid *dimension, label=r'$E_{air}$')
+plt.plot(t, Eac *dimension, label=r'$E_{acrylic}$')
+
+plt.xlabel(r'$t$ (seg)')
+# plt.ylabel(r'$E/(\rho_w \, V_b \, c_{p,w} ))$')
+plt.ylabel(r'$E$ (kJ)')
+plt.legend()
+if save: plt.savefig(filepath+name+'.pdf', dpi=200, bbox_inches='tight')
+plt.show()
+
+Elat = latent / (cpw*20) * np.ones_like(t)
+Em = T * np.ones_like(t)
+Eice = -cpi/cpw * Tice/20 * np.ones_like(t)
+
+print( np.max(Eice/Elat), np.min(Em/Elat) )
+# Energy to heat ice is 3% (with T_i=-5°C) or 0.6% (with T_i=-1°C) of latent heat
+# Energy to heat up melted water is at least 7.5% of latent
+
+# name = 'Ice volume related energies'
+# plt.figure()
+# plt.plot(t, Elat, label=r'$E_{latent}$')
+# plt.plot(t, Em, label=r'$E_{melted}$')
+# plt.plot(t, Eice, label=r'$E_{ice}$')
+# plt.xlabel(r'$t$ (seg)')
+# plt.ylabel(r'$E \, \gamma/(\beta (1-\tilde{V}))$ (seg)')
+# plt.legend()
+# if save: plt.savefig(filepath+name+'.pdf', dpi=200, bbox_inches='tight')
+# plt.show()
 
 
 
