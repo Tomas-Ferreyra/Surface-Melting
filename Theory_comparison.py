@@ -3986,5 +3986,1081 @@ hss = cpw * mw *(tip - tf) / (tf - tid)
 
 hss, hss/1500
 
+#%%
+# =============================================================================
+# Clean code
+# =============================================================================
+
+import numpy as np 
+import pandas as pd
+import glob
+
+from time import time
+from tqdm import tqdm
+from datetime import datetime
+
+
+import matplotlib.pyplot as plt
+from matplotlib import cm
+
+from scipy.integrate import cumulative_trapezoid
+from scipy.signal import savgol_filter
+from scipy.optimize import curve_fit, least_squares
+
+def density_millero(t, s):
+    """
+    Computes density of seawater in kg/m^3.
+    Function taken from Eq. 6 in Sharqawy2010.
+    Valid in the range 0 < t < 40 degC and 0.5 < sal < 43 g/kg.
+    Accuracy: 0.01%
+    """
+    t68 = t / (1 - 2.5e-4)  # inverse of Eq. 4 in Sharqawy2010
+    sp = s / 1.00472  # inverse of Eq. 3 in Sharqawy2010
+
+    rho_0 = 999.842594 + 6.793952e-2 * t68 - 9.095290e-3 * t68 ** 2 + 1.001685e-4 * t68 ** 3 - 1.120083e-6 * t68 ** 4 + 6.536336e-9 * t68 ** 5
+    A = 8.24493e-1 - 4.0899e-3 * t68 + 7.6438e-5 * t68 ** 2 - 8.2467e-7 * t68 ** 3 + 5.3875e-9 * t68 ** 4
+    B = -5.72466e-3 + 1.0227e-4 * t68 - 1.6546e-6 * t68 ** 2
+    C = 4.8314e-4
+    rho_sw = rho_0 + A * sp + B * sp ** (3 / 2) + C * sp ** 2
+    return rho_sw
+
+
+def exp_convolution(t, T, beta):
+    """
+    Compute y(t) = ∫_0^t exp(-beta (t-τ)) T(τ) dτ
+
+    Parameters
+    ----------
+    t : 1D numpy array
+        Time array (must be uniformly spaced)
+    T : 1D numpy array
+        Signal values at times t
+    beta : float
+        Positive decay constant
+
+    Returns
+    -------
+    y : 1D numpy array
+        Convolution result
+    """
+    # beta = alpha * lam**2
+    t = np.asarray(t)
+    T = np.asarray(T)
+
+    dt = t[1] - t[0]
+    y = np.zeros_like(T)
+
+    # Exact discrete update for exponential kernel
+    decay = np.exp(-beta * dt)
+    coeff = (1 - decay) / beta
+
+    for n in range(len(t) - 1):
+        y[n+1] = decay * y[n] + coeff * T[n]
+
+    return y
+
+def bt_nm(lam,t,T, tdiff):
+    s = 2/lam
+    beta = tdiff * lam**2
+    ct = exp_convolution(t, T, beta)
+    t1 = np.exp(-beta*t) 
+    return s/(lam) * ( t1 - T + beta * ct )
+
+# "Delayed" energy not in use
+# def energy_delayed(t,T, tdiff, N=1000):
+
+#     lam = np.pi/2 * (1 + 2* np.arange(0,N)) 
+#     mb = np.zeros_like(t)
+#     for n in range(0,N):        
+#         mbn = bt_nm(lam[n], t, T, tdiff) 
+        
+#         mb += mbn
+#     return mb
+
+
+def to_seconds(timestamps, fmt="%Y-%m-%d_%H.%M.%S.%f"):
+    t0 = datetime.strptime(str(timestamps[0]), fmt)
+    
+    times = []
+    for t in timestamps:
+        strt = str(t)
+        if len(strt) > 3: times.append( (datetime.strptime(str(t), fmt)-t0).total_seconds() )
+        elif len(strt) == 3: times.append(np.nan)
+
+    return np.array(times)
+
+def constants( To, Tm, Vo, Vb, rhoi, rhow, cp, L, Hd, k ):
+    alpha = Hd / (rhow*Vo*cp)
+    beta = rhoi / rhow
+    gamma = Vb/Vo
+    kappa = k / (rhow*Vo*cp)
+    Ste = L / (cp * (To-Tm))
+
+    A = beta/(gamma+alpha)
+    B = A * Ste
+    C = kappa /(gamma+alpha)
+    M = alpha / (gamma+alpha)
+
+    return A,B,C,M, alpha,beta,gamma,kappa,Ste    
+
+
+def rk4_sol(dt, A,B,C,D):
+    
+    def func(t,R):
+        top = B * (R**3 -1) + 1 + C/D * (R+t-1)
+        bot = A * (R**3 -1) - 1
+        return top/bot
+    
+    R_sol = [1]
+    t = [0]
+
+    # for n in range(1,len(t)):
+    while R_sol[-1] > 0:
+        
+        rn, tn = R_sol[-1], t[-1]
+        k1 = func(tn, rn)
+        k2 = func(tn + dt/2, rn + k1 * dt/2)
+        k3 = func(tn + dt/2, rn + k2 * dt/2)
+        k4 = func(tn + dt, rn + k3 * dt)
+        
+        rnext = rn + dt/6 * (k1+2*k2+2*k3+k4)
+        
+        R_sol.append( rnext )
+        t.append( tn + dt )    
+    
+    return np.array(R_sol), np.array(t)
+
+
+def lin_cons(t, val, fin=None):
+    tlin = t[:fin] * val[0]
+    tcons = np.ones_like(t[:fin]) * val[1]
+    funcion = np.minimum(tlin,tcons)
+    return funcion
+
+def solution_R( R, A,B ):
+    pterm = A*R/B
+    prod = (A+B) / (6 * np.cbrt(B-1)**2 * np.cbrt(B)**4)
+    arcterm = 2*np.sqrt(3) * np.arctan( (1+2*R * np.cbrt(B/(B-1)) ) / np.sqrt(3) )
+    logterm = np.log( ( (np.cbrt(B-1) + np.cbrt(B)*R)**2 - np.cbrt(B-1) * np.cbrt(B) * R ) / (np.cbrt(B-1) - np.cbrt(B)*R )**2  )
+    return pterm + prod * (arcterm + logterm)
+
+
+def Rs(R,A,B, final_time=1e8):
+    if B == 1:
+        return (A+1)/(2*R**2) + A*R
+   
+    elif B > 1:
+        pterm = A*R/B
+        prod = (A+B) / (6 * np.cbrt(B-1)**2 * np.cbrt(B)**4)
+        arcterm = 2*np.sqrt(3) * np.arctan( (1+2*R * np.cbrt(B/(B-1)) ) / np.sqrt(3) )
+        logterm = np.log( ( (np.cbrt(B-1) + np.cbrt(B)*R)**2 - np.cbrt(B-1) * np.cbrt(B) * R ) / (np.cbrt(B-1) - np.cbrt(B)*R  )**2  )
+
+        product = np.zeros_like(R)
+        product = prod * (arcterm + logterm)
+        product[product > final_time] = final_time 
+        # product[:-1], product[-1] = prod * (arcterm + logterm), final_time
+        return pterm + product
+
+    elif B<1:
+        pterm = A*R/B
+        prod = (A+B) / (6 * np.cbrt(B-1)**2 * np.cbrt(B)**4)
+        arcterm = 2*np.sqrt(3) * np.arctan( (1+2*R * np.cbrt(B/(B-1)) ) / np.sqrt(3) )
+        logterm = np.log( ( (np.cbrt(B-1) + np.cbrt(B)*R)**2 - np.cbrt(B-1) * np.cbrt(B) * R ) / (np.cbrt(B-1) - np.cbrt(B)*R )**2  )
+        return pterm + prod * (arcterm + logterm)
+
+def R_of_T(T, A,B, set_tot_cero=False):
+    bot =  B + A*T
+    argum = 1 - (1-T)/bot 
+    if set_tot_cero:
+        argum[argum<0] = 0
+    return  np.cbrt(argum)
+
+
+def V_of_T(t,T, A,B,C):
+    t1 = 1 - (1-T)/(B+A*T)
+    inte = cumulative_trapezoid(1-T, t, initial=0)
+    return t1 - C/(B+A*T) * inte
+
+# "Delayed" energy of dodecahedron not in use
+# def V_of_T_d(t,T, A,B,C, M, tdiff, N=1000):
+#     t1 = 1 - (1-T)/(B+A*T)
+#     t2 = M * energy_delayed(t, T, tdiff, N=N) /(B+A*T)
+#     inte = cumulative_trapezoid(1-T, t, initial=0)
+#     return t1 + t2 - C/(B+A*T) * inte
+
+def energies(t,T, alpha,beta,gamma,kappa,Ste):
+    eb = 1-T
+    ed = alpha/gamma * (1-T)
+    el = kappa/gamma * cumulative_trapezoid(1-T, t, initial=0)
+
+    A = beta/(gamma+alpha)
+    B = A * Ste
+    C = kappa /(gamma+alpha)
+    V = V_of_T(t, T, A, B, C)
+    
+    elat = beta/gamma * Ste * (1-V)
+    emelt = beta/gamma (1-V) * T
+
+    return eb,ed,el, elat, emelt
+    
+def get_color(mass, freq):
+    folder_colors = {'5': cm.Blues, '10': cm.Greens, '20': cm.Reds, '15': cm.Greys }
+    frequencies = ['1','2','4','8','12']
+
+    cmap = folder_colors[mass]
+    freq_index = frequencies.index(freq)
+    return cmap(0.3 + 0.7 * freq_index / (len(frequencies) - 1))  # soft to dark
+
+
+def get_data(name, bathmass, icemass, Hd, k, start, color, temp_correction=1, Hd_fit=0, delimiter=";", encoding="ISO-8859-1", header=0):
+    df = pd.read_csv(name, delimiter=";", encoding="ISO-8859-1", header=0)    
+    df['Timestamp'] = to_seconds(df["Timestamp"])
+
+    t = np.array(df["Timestamp"][:])
+    Tt = np.array(df["Water top °C"][:])
+    Tb = np.array(df["Water bot °C"][:])
+        
+    if temp_correction:
+        Tmean = correct_temp( (Tt + Tb) / 2 )
+        t, T = t[start:] - t[start], Tmean[start:] 
+        T0 = T[0]
+        # plt.title('With tempretature correction')
+    else:
+        T0 = Tb[0] # °C # maybe should use Tt
+        T = T0 + (Tt-Tt[0] + Tb-Tb[0] ) / 2
+        t, T = t[start:] - t[start], T[start:] 
+        plt.title('Without tempretature correction')
+        
+    
+    Vb = (bathmass )/ rhow # m^3
+    V0 = 1.0 * icemass / rhoi # m^3
+
+    # Vb = (mass_bath[mass] - 10.)/ rhow # m^3
+    # V0 = 1.0 * float(mass) / rhoi # m^3
+
+    T_tilde = (T - Tm) / (T0-Tm)
+
+    if Hd_fit:
+        def fit_hd(val): #Using minimum ±0.2 min
+            A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0 * 1.0, Vb, rhoi, rhow, cp, L, val[0], k )    
+            V_tilde = V_of_T(t, T_tilde, A, B, C)
+            minar = np.nanargmin(V_tilde)
+            minmean = V_tilde[minar-120:minar+120]  #np.nanmean( V_tilde[minar-120:minar+120] )
+            return  minmean[~np.isnan(minmean)] 
+        
+        ls = least_squares(fit_hd, [Hd], bounds=((0.),(Hd*2.5)), method='trf')
+        # ls = least_squares(fit_hd, [Hd], method='lm')
+        hd_val = ls.x[0]
+
+        A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0 * 1.0, Vb, rhoi, rhow, cp, L, ls.x[0], k )
+        # print( ls.x )
+
+    else:
+        A,B,C,M, alpha,beta,gamma,kappa,Ste = constants( T0, Tm, V0 * 1.0, Vb, rhoi, rhow, cp, L, Hd, k )
+        hd_val = Hd
+        
+    ctes = [A,B,C,M, alpha,beta,gamma,kappa,Ste]
+     
+    V_tilde = V_of_T(t, T_tilde, A, B, C)
+    m = (1 - V_tilde) * V0 * rhoi
+
+    return t, T, T_tilde, V_tilde, m, hd_val, ctes
+
+
+def average_window( x, window):
+    """
+    Parameters
+    ----------
+    t : 1D-array
+        time.
+    T : 1D-array
+        temperature.
+    window : int
+        window size to average in.
+
+    Returns
+    -------
+    t : 1D-array
+        averaged time.
+    T : 1D-array
+        averaged temperature.
+    """
+    xa = np.convolve(x, np.ones(window)/window, mode='valid')
+    return xa[::window]
+
+
+def constants_err( T0, Tm, m0, mb, rhoi, rhow, cp, L, Hd, k, errs, N ):
+    """
+    Calculates the parameters A, B and C with errors
+    
+    errs : list
+        error of each of the previous variables (in the same other as the function takes them).
+    N : int
+        number of samples to create.
+    """
+    err_T0, err_Tm, err_m0, err_mb, err_rhoi, err_rhow, err_cp, err_L, err_Hd, err_k = errs
+    
+    T0_mc = np.random.normal(T0, err_T0, N)
+    Tm_mc = np.random.normal(Tm, err_Tm, N)
+    V0_mc = 1.0 * np.random.normal(m0, err_m0, N) / rhoi
+    Vb_mc = 1.0 * np.random.normal(mb, err_mb, N) / rhow 
+    rhoi_mc = np.random.normal(rhoi, err_rhoi, N)
+    rhow_mc = np.random.normal(rhow, err_rhow, N)
+    cp_mc = np.random.normal(cp, err_cp, N)
+    L_mc = np.random.normal(L, err_L, N)
+    Hd_mc = np.random.normal(Hd, err_Hd, N)
+    k_mc = np.random.normal(k, err_k, N)
+
+    
+    A_mc, B_mc , C_mc, M, alpha,beta,gamma,kappa,Ste = constants( T0_mc, Tm_mc, V0_mc, Vb_mc, rhoi_mc, rhow_mc, cp_mc, L_mc, Hd_mc, k_mc )    
+    
+    return A_mc, B_mc, C_mc, T0_mc, Tm_mc
+
+
+def V_of_T_error(t, T, err_T, T0_mc, Tm_mc , A,B,C, N, chunk=1000, show_bar=False):
+    """
+    Parameters
+    ----------
+    T : 1d array
+        list with the array of T (dimensional).
+    A : 1d-array
+        variable A with N samples.
+    B : 1d-array
+        variable B with N samples.
+    C : 1d-array
+        variable C with N samples.
+    N : int
+        number of samples.
+    chunk : int
+        Size of chunks to do calculations, should be a divsor of N. Default = 1000
+
+    Returns
+    -------
+    V_mean : (len(T)) array
+        Volume mean values .
+    V_std : (len(T)) array
+        Volume standard deviation.
+
+    """
+    T0, Tm = T0_mc, Tm_mc
+    V_err = np.empty((len(T), N))
+
+    for i in tqdm(range(0, N, chunk), disable=not show_bar):
+        j = i + chunk
+        samples = np.random.normal(T[:, None], err_T, size=(len(T), j - i))
+        samples[0,:] = T0[i:j]
+        
+        Tn = (samples - Tm[None, i:j]) / (T0[None, i:j] - Tm[None, i:j])
+        
+        den = B[None, i:j] + A[None, i:j] * Tn
+        t_1 = 1 - (1 - Tn) / den
+        inte = cumulative_trapezoid(1 - Tn, t, axis=0, initial=0)
+        
+        V_err[:, i:j] = t_1 - (C[None, i:j] / den) * inte
+
+    return np.mean(V_err,axis=1), np.std(V_err,axis=1)
+    
+
+def plot_values( file_path, starts, mass_bath, mass_ice, plot=False, dif_size=False, plot_temp=False, marker='.-' ):
+    global statistics, temp_correction, averaged, window, montecarlo, Hd_fit, avoid_mass, avoid_freq
+    global Hd, k, Tm, rhoi, rhow, cp, L, err_m0, all_errors
+    global fig, ax, maplot
+    
+    names = '*Hz.csv'
+    file_name = glob.glob(file_path+names)
+
+    for name in tqdm(file_name, disable=True):
+        if not dif_size:
+            splits = name[-20:].split('-')[-2:]     
+            mass, freq = splits[0][:-2], splits[1][:-6]
+    
+        else:
+            splits = name[-30:].split('-')[-4:]     
+            repe, mass, freq = splits[0][-1], splits[2][:-2], splits[3][:-6]
+
+        if (mass not in avoid_mass) and (freq not in avoid_freq):
+            if not dif_size:
+                start = starts[mass+','+freq]
+                color = get_color(mass, freq)
+                splot = maplot[mass]
+                
+                bathmass = mass_bath[mass] - 0.
+                icemass = mass_ice[mass+','+freq]
+            
+            else:
+                start = starts[repe+','+mass+','+freq]
+                color = get_color(mass, freq)
+                splot = maplot[mass]
+                
+                bathmass = mass_bath[mass] - 10.
+                icemass = mass_ice[repe+','+mass+','+freq]
+            
+            
+            t, T, T_tilde, V_tilde, m, hd_val, ctes = get_data(name, bathmass, icemass, Hd, k, start, color, temp_correction=temp_correction, Hd_fit=Hd_fit )
+            A,B,C,M, alpha,beta,gamma,kappa,Ste = ctes
+            
+            if montecarlo:
+                all_errors[2] = err_m0 * float(mass)/5 # correction to error in initial ice mass (since the value is valid for 5 kg)
+                A_mc, B_mc, C_mc, T0_mc, Tm_mc = constants_err( T[0], Tm, icemass, bathmass, rhoi, rhow, cp, L, hd_val, k, all_errors, statistics )    
+                V_me, V_sd = V_of_T_error(t, T, err_T, T0_mc, Tm_mc, A_mc, B_mc, C_mc, statistics, chunk= np.min([statistics//10,1000]), show_bar=False)      
+            else:
+                V_me, V_sd = np.zeros_like(V_tilde), np.zeros_like(V_tilde) 
+
+            if averaged:
+                t, m = average_window(t, window), average_window(m, window)
+                T_tilde, V_tilde = average_window(T_tilde, window), average_window(V_tilde, window)
+                V_me, V_sd = average_window(V_me, window), average_window(V_sd, window)
+            else:
+                V_tilde = V_of_T(t, T_tilde, A, B, C)
+                m = (1 - V_tilde) * icemass
+
+            if plot_temp:
+                ax[splot].plot(T, '.-', color=color,  label=f'{freq} Hz')
+            else:
+                ax[splot].plot(t/60, V_tilde, marker, color=color,  label=f'{freq} Hz' )
+
+            if montecarlo:
+                ax[splot].fill_between(t/60, V_me-V_sd, V_me+V_sd,  color=color, alpha=0.5)#, zorder=0.6)
+
+
+def get_adims(t, V_tilde, icemass, T, ctes, u_rms, window, mefe, Tm=0, lims=[0.8,0.1], plot=False, surf_corrected=False, m_block=1):
+    mass, freq = mefe
+
+    V0 = icemass / rhoi
+    A,B,C,M, alpha,beta,gamma,kappa,Ste = np.array(ctes)
+    
+    V = V_tilde * V0
+
+    Vsv = savgol_filter(V, len(V)//window, 3)
+
+    # if window_length:
+    #     Vsv = savgol_filter(V, window_length, 3)
+    # else:
+    #     if mafre == '20,1': Vsv = savgol_filter(V, len(V)//12, 3)
+    #     elif mafre in ['20,2','20,4','20,8','20,12']: Vsv = savgol_filter(V, len(V)//6, 3)
+    #     else: Vsv = savgol_filter(V, len(V)//4, 3)
+            
+    # mask1 = np.gradient(Vsv)>0
+    # mask2 = (Vsv/V0) < last
+    # if np.sum(mask1) > 0:
+    #     fin = np.min( [np.where(mask2)[0][0],  np.where(mask1)[0][0]] )
+    # else:
+        # fin = np.where(mask2)[0][0]
+    
+    ini = np.where( V_tilde>lims[0] )[0][-1]
+    fin = np.where( V_tilde<lims[1] )[0][0]
+
+    Rsv = np.cbrt(Vsv)
+    gRsv = np.gradient(Rsv,t)
+    
+    if plot:
+        fig, ax = plt.subplots(1,2, layout='constrained', figsize=(10,5))
+        plt.suptitle(f'{mass} kg, {freq} Hz')
+        ax[0].plot(t/60, V/V0, '.-', label='data' )
+        ax[0].plot(t/60, Vsv/V0, '-', label='smoothing' )
+        ax[1].plot(Vsv/V0, np.gradient(Vsv)/V0, '.' )
+        ax[0].grid()
+        ax[1].grid()
+        ax[0].set_xlabel(r'$t$ (min)')
+        ax[1].set_xlabel(r'$\tilde{V}$')
+        ax[0].set_ylabel(r'$\tilde{V}$')
+        ax[1].set_ylabel(r'$d\tilde{V}/dt$ (1/s)')
+        ax[0].legend()
+        plt.show()
+
+    Re = u_rms * Rsv[0] / nu
+    Ra = g * Rsv[0]**3 / (diff_th * nu) * np.abs( density_millero(0, 0) - density_millero(T[0], 0) ) / density_millero(T[0], 0)
+    
+    Ste_t = L / (cp * (T-Tm))
+    Ret = u_rms * Rsv[ini:fin] / nu
+    Rat = g * Rsv[ini:fin]**3 / (diff_th * nu) * np.abs( density_millero(0, 0) - density_millero(T[ini:fin], 0) ) / density_millero(T[ini:fin], 0)
+
+    if surf_corrected:    
+        Nu = - beta * Ste * Pr * np.mean(gRsv[ini:fin]) * Rsv[0] / nu / (6 * np.cbrt(icemass/m_block) )
+        Nut = - beta * Ste_t[ini:fin] * Pr * gRsv[ini:fin] * Rsv[ini:fin] / nu / (6 * np.cbrt(icemass/m_block) )
+    else:    
+        Nu = - beta * Ste * Pr * np.mean(gRsv[ini:fin]) * Rsv[0] / nu
+        Nut = - beta * Ste_t[ini:fin] * Pr * gRsv[ini:fin] * Rsv[ini:fin] / nu
+        
+    return Nu,Re,Ra,Nut,Ret,Rat
+
+
+def return_adims(file_path, size, starts, mass_bath, mass_ice, windows, lims=[0.8,0.1], plot=False, dif_size=False, surf_corrected=False, m_block=1):
+    global colors, sizes, Nus, Res, Ras, Nuts, Rets, Rats
+    global statistics, temp_correction, averaged, window, montecarlo, Hd_fit, avoid_mass, avoid_freq, umrss
+    global Hd, k, Tm, rhoi, rhow, cp, L, g, nu, diff_th, Pr
+    
+    names = '*Hz.csv'
+    file_name = glob.glob(file_path+names)
+    
+    for name in tqdm(file_name, disable=True):        
+        if not dif_size:
+            splits = name[-20:].split('-')[-2:]     
+            mass, freq = splits[0][:-2], splits[1][:-6]
+    
+        else:
+            splits = name[-30:].split('-')[-4:]     
+            repe, mass, freq = splits[0][-1], splits[2][:-2], splits[3][:-6]
+
+    
+        if (mass not in avoid_mass) and (freq not in avoid_freq):
+            if not dif_size:
+                start = starts[mass+','+freq]
+                color = get_color(mass, freq)
+                window = windows[mass+','+freq]
+                
+                bathmass = mass_bath[mass] - 0.
+                icemass = mass_ice[mass+','+freq]
+            
+            else:
+                start = starts[repe+','+mass+','+freq]
+                color = get_color(mass, freq)
+                window = windows[repe+','+mass+','+freq]
+                
+                bathmass = mass_bath[mass] - 10.
+                icemass = mass_ice[repe+','+mass+','+freq]
+            
+            u_rms = umrss[freq]                        
+            t, T, T_tilde, V_tilde, m, hd_val, ctes = get_data(name, bathmass, icemass, Hd, k, start, color, temp_correction=temp_correction, Hd_fit=Hd_fit )
+    
+            Nu,Re,Ra,Nut,Ret,Rat = get_adims(t, V_tilde, icemass, T, ctes, u_rms, window, [mass,freq], Tm=Tm, lims=lims, \
+                                             plot=plot, surf_corrected=surf_corrected, m_block=m_block)
+            
+            colors.append(color); sizes.append(size)
+            Nus.append(Nu); Res.append(Re); Ras.append(Ra)
+            Nuts.append(Nut); Rets.append(Ret); Rats.append(Rat)
+
+
+
+
+#------ Thermocuple calibration ------ 
+def temperature_calibration( fit_deg ):
+    file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Cal thermo/calibration_pt104.csv'
+    df = pd.read_csv(file_path, delimiter=",", encoding="ISO-8859-1", header=0)
+    t_pt100, T_pt100 = to_seconds(df['Unnamed: 0'], fmt="%H:%M:%S"), np.array(df['Channel 1 Ave. (C)'])
+    
+    file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Cal thermo/2026-03-13_14.59.48.csv'
+    df = pd.read_csv(file_path, delimiter=";", encoding="ISO-8859-1", header=0)
+    df['Timestamp'] = to_seconds(df["Timestamp"], fmt="%Y-%m-%d_%H.%M.%S.%f")
+    t_th = np.array(df["Timestamp"][:]) + 48
+    Tb_th, Tt_th = np.array(df["Water bot °C"][:]), np.array(df["Water top °C"][:])
+    Tmean_th = ( Tb_th + Tt_th ) / 2
+    
+    T_pi_int = np.interp(t_th, t_pt100, T_pt100)
+    end_stair = 308 * 60
+    fil_th = t_th < end_stair 
+
+    fit_mean = np.polyfit( Tmean_th[fil_th], T_pi_int[fil_th], fit_deg)
+    return fit_mean
+    
+def correct_temperature( T_mean, coeffs ):
+    return np.polyval(coeffs, T_mean )
+
+calibration_deg = 2
+coeffs_cal = temperature_calibration( calibration_deg )
+correct_temp = lambda T_mean: correct_temperature( T_mean, coeffs_cal )
+
+
+#------ Definitions and values ------ 
+starts = {'20,4':198, '20,2':139, '10,12':140, '10,8':95, '10,4':125, '10,2':240, '10,1':300, '5,12':165, '5,8':90, '5,4':130,
+          '5,2':170, '5,1':120, '20,1':160, '20,12':164, '20,8':118, '15,4':0 }
+mass_ice = {'5,1': 4.992, '5,2': 4.997, '5,4': 5.009, '5,8': 5.011, '5,12': 5.024, '10,1': 9.992, '10,2': 10.043, '10,4': 10.047, '10,8': 10.037, 
+            '10,12': 10.005, '20,1': 19.899, '20,2': 19.899, '20,4': 20.019, '20,8': 20.017, '20,12': 20.054, '15,4':15.}
+
+starts_50 = {'0,10,1':190, '0,10,2':193, '0,10,4':357, '0,10,8':257, '0,10,12':150 }
+mass_ice_50 = {'0,10,1':9.531, '0,10,2':9.618, '0,10,4':8.692, '0,10,8':8.970, '0,10,12':10.522 }
+
+starts_repe = {'0,10,1':0, '0,10,2':0, '0,10,4':0, '0,10,8':0, '0,10,12':0, '0,5,1':0, '0,5,2':0, '0,5,4':0, '0,5,8':0, '0,5,12':0 }
+mass_ice_repe = {'0,10,1':9.983, '0,10,2':9.971, '0,10,4':9.961, '0,10,8':9.956, '0,10,12':9.969, '0,5,1':4.984, '0,5,2':4.986, '0,5,4':4.976, '0,5,8':4.975, '0,5,12':4.991 }
+
+starts_100 = {'0,10,1':0, '0,10,2':0, '0,10,4':0, '0,10,8':0, '0,10,12':320 }
+mass_ice_100 = {'0,10,1':0., '0,10,2':.0, '0,10,4':.0, '0,10,8':.0, '0,10,12':10.205 }
+
+
+
+mass_bath = {'10':102, '5':107, '20':92, '15':97}
+
+rhow, rhoi = 998.2, 916.8 # kg/m3
+Tm = 0 #°C
+L = 334000 # J/kg 
+cp = 4184 # J/(kg K)
+
+k = 11.59 # J/sK
+Hd = 34320 #J/K
+Tm = 0 #°C
+
+umrss = {'1':0.003957, '2':0.00817, '4':0.01844, '8':0.03881, '12':0.06663}
+g = 9.81
+Pr = 7
+nu, diff_th = 1e-6, 0.143e-6 # m2 / s
+
+
+#------ Errors on variables ------ 
+err_T, err_Tm = 0.1, 0   # error for T0 is equal to the error in T
+err_m0, err_mb = 0.01, 0.5
+err_rhoi, err_rhow = 0, 0
+err_cp, err_L = 0, 0
+err_Hd, err_k = 4000, 0.1
+
+all_errors = [err_T, err_Tm, err_m0, err_mb, err_rhoi, err_rhow, err_cp, err_L, err_Hd, err_k]
+
+
+#%%
+# Plot adimensional volumes
+
+statistics = 10
+
+temp_correction = 1
+
+averaged = 1
+window = 140 # 10 is one second
+
+montecarlo = 1
+Hd_fit = 1
+
+maplot = {'5':0, '10':1, '20':2, '15':None}
+fig, ax = plt.subplots(1,3, figsize = (15,4), sharey=True, layout='constrained')
+
+avoid_mass = ['15',]
+avoid_freq = []
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
+plot_values( file_path, starts, mass_bath, mass_ice, plot=True, dif_size=False, marker='o-')
+
+# file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps-50mm/'
+# plot_values( file_path, starts_50, mass_bath, mass_ice_50, plot=True, dif_size=True, plot_temp=False, marker='s-')
+
+# file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps-100mm/'
+# plot_values( file_path, starts_100, mass_bath, mass_ice_100, plot=True, dif_size=True, plot_temp=False, marker='^-')
+
+
+# leg2 = [ax[1].plot([], [], c, color=get_color('10', f))[0] for f,c in zip(['12','12','12','4', '8','12'],['o-','s-','^-','o-','o-','o-'])]
+# lgd2 = ax[1].legend(leg2, ['25 mm', '50 mm', '100 mm', '4 Hz', '8 Hz', '12 Hz'], loc='upper right', ncol=2)
+
+
+for i in range(3):
+    ax[i].set_xlabel(r'$t$ (min)')
+    # ax[i].set_ylabel(r'$T$ (°C)')
+    
+    ax[i].legend()
+    ax[i].grid()
+
+ax[0].set_ylabel(r'$\tilde{V}$')
+ax[0].set_ylim(-0.13,1.05)
+
+savepath = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Year4/'
+savename = 'dif_sizes.png'
+# plt.savefig(savepath+savename, dpi=100, bbox_inches='tight')
+
+plt.show()
+
+#%%
+
+# Plot adimensional volumes != sizes
+statistics = 100
+
+temp_correction = 1
+
+averaged = 1
+window = 10 # 10 is one second
+
+montecarlo = 1
+Hd_fit = 1
+
+
+maplot = {'5':0, '10':1, '20':2, '15':None}
+fig, ax = plt.subplots(1,3, figsize = (15,4), sharey=True, layout='constrained')
+
+avoid_mass = ['15']
+avoid_freq = []
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
+
+plot_values( file_path, starts, mass_bath, mass_ice, plot=True )
+
+
+for i in range(3):
+    ax[i].set_xlabel(r'$t$ (min)')
+    # ax[i].set_ylabel(r'$T$ (°C)')
+    
+    ax[i].legend()
+    ax[i].grid()
+
+ax[0].set_ylabel(r'$\tilde{V}$')
+ax[0].set_ylim(-0.13,1.05)
+
+savepath = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Robert H/'
+savename = 'hdfit.png'
+# plt.savefig(savepath+savename, dpi=100, bbox_inches='tight')
+
+plt.show()
+
+
+
+
+#%%
+# Get Nu and Re. (Also Ra but it isn't really used)
+
+# repes = 1
+# mm100 = 0
+# mm50 = 1
+# mm10 = 1
+
+temp_correction = 1
+Hd_fit = 1
+
+colors, sizes = [], []
+Nus, Res, Ras = [],[],[]
+Nuts, Rets, Rats = [],[],[]
+
+avoid_mass = ['15']
+avoid_freq = []
+
+
+t1 = time()
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
+
+windows = { '5,1':7, '5,2':10, '5,4':10, '5,8':10, '5,12':10, '10,1':7, '10,2':10, '10,4':10, '10,8':10, '10,12':10, 
+            '20,1':21, '20,2':30, '20,4':30, '20,8':30, '20,12':30, '15,4':20 }
+return_adims(file_path, 25, starts, mass_bath, mass_ice, windows, lims=[0.8,0.1], plot=True, dif_size=False, surf_corrected=True, m_block=0.011)
+
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps-50mm/'
+windows_50 = { '0,10,1':7, '0,10,2':10, '0,10,4':10, '0,10,8':10, '0,10,12':10 }
+return_adims(file_path, 50, starts_50, mass_bath, mass_ice_50, windows_50, lims=[0.8,0.1], plot=False, dif_size=True, surf_corrected=True, m_block=0.120)
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps-100mm/'
+windows_100 = { '0,10,1':7, '0,10,2':10, '0,10,4':10, '0,10,8':10, '0,10,12':10 }
+return_adims(file_path, 100, starts_100, mass_bath, mass_ice_100, windows_100, lims=[0.8,0.1], plot=False, dif_size=True, surf_corrected=True, m_block=0.850)
+
+
+
+t2 = time()
+print(t2-t1)
+
+
+
+#%%
+# Plot Nu vs Re
+
+merke = {25:'o', 50:'s', 100:'^'}
+mark = [ merke[m] for m in sizes ]
+
+fig, ax = plt.subplots(1,2, layout='constrained', figsize=(15,4) )
+
+for xi, yi, c,  m in zip(Res, Nus, colors, mark):
+    ax[0].scatter(xi, yi, marker=m, c=c)
+
+rree = np.linspace(1.8e3,1.7e4,3)
+ax[0].plot( rree, rree * 0.01, 'k--', label=r'$Nu \propto Re$' )
+
+ax[0].set_xscale('log')
+ax[0].set_yscale('log')
+ax[0].set_xlabel(r'$\langle \text{Re} \rangle$')
+ax[0].set_ylabel(r'$\langle \text{Nu} \rangle$')
+ax[0].legend()
+
+
+for i in range(len(Nuts)):
+    ax[1].plot( Rets[i], Nuts[i], mark[i], c=colors[i], markersize=3 )
+
+rree = np.linspace(1.8e3,1.7e4,3)
+ax[1].plot( rree, rree * 0.01, 'k--', label=r'$Nu \propto Re$' )
+
+# ax[1].legend(loc='upper left')
+ax[1].set_xscale('log')
+ax[1].set_yscale('log')
+ax[1].set_xlabel(r'Re$(t)$')
+ax[1].set_ylabel(r'Nu$(t)$')
+# ax[1].set_ylim( [380,28000] )
+ax[1].set_ylim( [7,500] )
+
+freqs = ['1','2','4','8','12', '1','2','4','8','12', '1','2','4','8','12', '1','2','4','8','12', '12']
+markers = ['o','o','o','o','o', 'o','o','o','o','o', 'o','o','o','o','o', 's','s','s','s','s', '^']
+masses = ['5','5','5','5','5', '10','10','10','10','10', '20','20','20','20','20', '10','10','10','10','10', '10']
+
+labs = ['25 mm, 1 Hz, 5 kg','25 mm, 2 Hz, 5 kg','25 mm, 4 Hz, 5 kg','25 mm, 8 Hz, 5 kg','25 mm, 12 Hz, 5 kg', 
+        '25 mm, 1 Hz, 10 kg','25 mm, 2 Hz, 10 kg','25 mm, 4 Hz, 10 kg','25 mm, 8 Hz, 10 kg','25 mm, 12 Hz, 10 kg', 
+        '25 mm, 1 Hz, 20 kg','25 mm, 2 Hz, 20 kg','25 mm, 4 Hz, 20 kg','25 mm, 8 Hz, 20 kg','25 mm, 12 Hz, 20 kg', 
+        '50 mm, 1 Hz, 10 kg','50 mm, 2 Hz, 10 kg','50 mm, 4 Hz, 10 kg','50 mm, 8 Hz, 10 kg','50 mm, 12 Hz, 10 kg', 
+        '100 mm, 12 Hz, 10 kg', ]
+
+leg = [ax[1].plot([], [], fmt, color=get_color(ma, f))[0] for f,fmt,ma in zip(freqs,markers,masses)]
+lgd = ax[1].legend(leg, labs, ncol=2, loc=(1.1,0.2))
+
+
+
+savepath = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Year4/'
+savename = 'nu_re_corrected.png'
+# plt.savefig(savepath+savename, dpi=200, bbox_inches='tight')
+
+plt.show()
+
+# plt.figure()
+# for i in range(len(Nuts)):
+#     plt.plot( Rats[i], Nuts[i], '.-', c=colors[i] )
+
+# plt.xscale('log')
+# plt.yscale('log')
+# plt.xlabel('Ra')
+# plt.ylabel('Nu')
+# plt.show()
+
+#%%
+
+
+
+
+
+
+#%%
+# Comparison of experiments with theory, temperature
+
+
+statistics = 10000
+
+temp_correction = 1
+
+averaged = 1
+window = 10 # 10 is one second
+
+montecarlo = 0
+Hd_fit = 1
+
+
+
+cfs, freqs, mss, tinis = [],[],[],[]
+
+
+maplot = {'5':0, '10':1, '20':2, '15':None}
+
+file_path = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Go pro-new experiments/Everything/Temps/'
+avoid_mass = ['15']
+avoid_freq = []
+
+
+fig, axs = plt.subplots(2,2, figsize = (15,8), sharey=False, layout='constrained')
+ax = axs.flatten()
+
+for name in tqdm(file_name, disable=True):
+    splits = name[-20:].split('-')[-2:]     
+    mass, freq = splits[0][:-2], splits[1][:-6]
+
+    if (mass not in avoid_mass) and (freq not in avoid_freq):
+        start = starts[mass+','+freq]
+        color = get_color(mass, freq)
+        splot = maplot[mass]
+        
+        bathmass = mass_bath[mass] - 0.
+        icemass = mass_ice[mass+','+freq]
+        
+        t, T, T_tilde, V_tilde, m, hd_val, ctes = get_data(name, bathmass, icemass, Hd, k, start, color, temp_correction=temp_correction, Hd_fit=Hd_fit )
+        A,B,C,M, alpha,beta,gamma,kappa,Ste = ctes
+        
+        if montecarlo:
+            all_errors[2] = err_m0 * float(mass)/5 # correction to error in initial ice mass (since the value is valid for 5 kg)
+            A_mc, B_mc, C_mc, T0_mc, Tm_mc = constants_err( T[0], Tm, icemass, bathmass, rhoi, rhow, cp, L, hd_val, k, all_errors, statistics )    
+            V_me, V_sd = V_of_T_error(t, T, err_T, T0_mc, Tm_mc, A_mc, B_mc, C_mc, statistics, chunk= np.min([statistics//10,1000]), show_bar=False)      
+        else:
+            V_me, V_sd = np.zeros_like(V_tilde), np.zeros_like(V_tilde) 
+        
+        
+        
+        fitfun = lambda Temp,c,A,B: np.real( ( solution_R( R_of_T(Temp, A, B, set_tot_cero=False) , A, B) - solution_R(1, A, B) ) ) / c
+    
+        T_linear = fitfun(T_tilde,1,A,B)
+        fin = np.min( [ np.where(np.isnan(T_linear))[0][0], np.where(np.isnan(t))[0][0] ] )
+        
+        ff = np.where( V_tilde < 0.4 )[0][0]
+        mask = t < ff
+        constant_sl = lambda T,c: c*T
+        cc,cov = curve_fit(constant_sl, t[mask], T_linear[mask] )
+        c = cc[0]
+
+        
+        def funfitf(val):
+            funcion = lin_cons(t, val, fin)
+            return np.abs( T_linear[:fin] - funcion )
+        
+        lsf = least_squares(funfitf, [c,1])
+        cf, consf = lsf.x
+        
+        cfs.append( cf )
+        freqs.append( int(freq) )
+        mss.append( int(mass) )
+        tinis.append(T[0])
+    
+        ax[splot].plot(t/60, T_linear , '.-', color=color, label=f'{freq} Hz')
+        ax[splot].plot(t/60, lin_cons(t, lsf.x) , '--', color='darkviolet')
+        ax[splot].set_title(f'{mass} kg')
+        
+        # ax[3].plot(t/60 * cf, lin_cons(t, lsf.x) / consf , '--', color='darkviolet')
+        ax[3].plot(t * cf, T_linear  , '.-', color=color)
+        ax[3].plot( np.linspace(0,3,10), np.linspace(0,3,10) , '--', color='k')
+        
+        
+        # plt.plot( t*cf , lin_cons(t, lsf.x) , 'm--' )
+for i in range(3):
+    ax[i].legend()
+    ax[i].set_xlabel(r'$t$ (min)')
+    ax[i].set_ylabel(r'$R_S(R_T(\tilde{T})) - R_S(1)$')
+    
+ax[3].set_xlabel(r'$F\,t$ ')
+ax[3].set_ylabel(r'$R_S(R_T(\tilde{T})) - R_S(1)$')
+
+savepath = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Robert H/'
+savename = 'theory_exp.png'
+# plt.savefig(savepath+savename, dpi=200, bbox_inches='tight')
+
+
+plt.show()
+
+
+#%%
+# Comparison of experiments with theory, constant
+
+cs = np.array(cfs)
+# cerr = np.array(cerr)
+mss = np.array(mss)
+freqs = np.array(freqs) 
+tinis = np.array(tinis) 
+
+Pr = 7
+umrss = np.array([0.003957, 0.00817, 0.01844, 0.03881, 0.06663])
+color = [0,'blue','green',0,'red']
+
+# rhow/rhoi*cp/L * umrss
+
+fig, ax = plt.subplots(1,2, figsize=(10,4), layout="constrained")
+for i in [5,10,20]:
+    mask = mss==i
+    ax[0].plot( freqs[mask], cs[mask] , 'o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+    # ax[0].plot( freqs[mask], cfs[mask] , 's', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+
+    ax[1].plot( freqs[mask], cs[mask] * np.cbrt(i / rhoi) / tinis[mask]  , 'o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+    # ax[1].plot( freqs[mask], cfs[mask] * np.cbrt(i / rhoi) / tinis[mask]  , 's', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+
+    # ax[0].errorbar( freqs[mask], cs[mask], yerr=cerr[mask] , fmt='o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+    # ax[1].errorbar( freqs[mask], cs[mask] * np.cbrt(i / rhoi) / tinis[mask], yerr=cerr[mask] * np.cbrt(i / rhoi) / tinis[mask] , \
+    #               fmt='o', label=f'{i} kg', color=color[i//5], markeredgecolor='k')
+
+ax[1].plot( [1,2,4,8,12], rhow/rhoi*cp/L * umrss / Pr * 1 , '^', color='orange', label='Theory',zorder=4)
+
+ax[0].legend()
+ax[1].legend()
+
+ax[0].set_ylabel(r'$F$ (1/s)')
+ax[0].set_xlabel(r'Motor speed (Hz)')
+
+ax[1].set_ylabel(r'$F \,\, V_0^{1/3} \, / \, \Delta T$ (m/sK)')
+ax[1].set_xlabel(r'Motor speed (Hz)')
+
+savepath = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Robert H/'
+savename = 'ctes.png'
+# plt.savefig(savepath+savename, dpi=200, bbox_inches='tight')
+
+
+plt.show()
+
+
+
+
+#%%
+
+# Solutions
+A = 1
+fitfun = lambda Temp,c,A,B: np.real( ( solution_R( R_of_T(Temp, A, B, set_tot_cero=False) , A, B) - solution_R(1, A, B) ) ) / c
+
+plt.figure()
+
+for B in [0.1,0.5,0.9,0.99]:
+    finb = np.cbrt( np.max([0,1-1/B]) )
+    R = np.linspace(1,finb,numb, endpoint=True)
+    # plt.plot( Rs(R,1,B) - Rs(R[:1],1,B), T_adim(R,A,B) , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+    plt.plot( Rs(R,1,B) - Rs(R[:1],1,B), fitfun( T_adim(R,A,B),1,A,B)  , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+
+R = np.linspace(1,0,numb) 
+# plt.plot( Rs(R,1,1) - Rs(R[:1],1,1), T_adim(R,A,1) , 'k--', label='B=1' ) 
+plt.plot( Rs(R,1,1) - Rs(R[:1],1,1), fitfun( T_adim(R,A,B),1,A,B) , 'k--', label='B=1' ) 
+
+for B in [1.02,1.2,2]:
+    finb = np.cbrt( np.max([0,1-1/B]) )
+    R = np.linspace(1,finb,numb, endpoint=True)
+    # plt.plot( Rs(R,1,B) - Rs(R[:1],1,B), T_adim(R,A,B) , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+    plt.plot( Rs(R,1,B) - Rs(R[:1],1,B), fitfun( T_adim(R,A,B),1,A,B) , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+
+
+plt.xlabel(r'$Ct$')
+plt.legend()
+plt.grid()
+
+plt.xlim(-0.1,10)
+plt.ylim(-0.1,10.1)
+
+plt.ylabel(r'$\tilde{T}$')
+plt.show()
+
+
+
+
+
+
+
+#%%
+
+numb = 100000
+size = 1.5
+
+fig, ax = plt.subplots(1,3, figsize=(15*size,5*size))
+# for B in [1.1]:
+for B in [0.1,0.5,0.9,0.99]:
+    finb = np.cbrt( np.max([0,1-1/B]) )
+    R = np.linspace(1,finb,numb, endpoint=True)
+    ax[0].plot( Rs(R,1,B) - Rs(R[:1],1,B), R , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+    ax[1].plot( Rs(R,1,B) - Rs(R[:1],1,B), R**3 , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+    ax[2].plot( Rs(R,1,B) - Rs(R[:1],1,B), T_adim(R,1,B) , '-', label='B='+str(B), color=((1-B/2),0,0) ) 
+
+R = np.linspace(1,0,numb) 
+ax[0].plot( Rs(R,1,1) - Rs(R[:1],1,1), R, 'k--', label='B=1' )
+ax[1].plot( Rs(R,1,1) - Rs(R[:1],1,1), R**3, 'k--', label='B=1' )
+ax[2].plot( Rs(R,1,1) - Rs(R[:1],1,1), T_adim(R,1,1) , 'k--', label='B=1' ) 
+
+for B in [1.02,1.2,2]:
+    finb = np.cbrt( np.max([0,1-1/B]) )
+    R = np.linspace(1,finb,numb, endpoint=True)
+    ax[0].plot( Rs(R,1,B) - Rs(R[:1],1,B), R , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+    ax[1].plot( Rs(R,1,B) - Rs(R[:1],1,B), R**3 , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+    ax[2].plot( Rs(R,1,B) - Rs(R[:1],1,B), T_adim(R,1,B) , '-', label='B='+str(B), color=(0,(1-1/B/2),0) ) 
+    
+for l in range(3):
+    ax[l].set_xlabel(r'$Ct$')
+    ax[l].legend()
+    ax[l].grid()
+
+ax[0].set_xlim(-0.8,50)
+ax[0].set_ylabel(r'$\tilde{R}$')
+ax[1].set_xlim(-0.2,12)
+ax[1].set_ylabel(r'$\tilde{V}$')
+ax[2].set_xlim(-0.1,6)
+ax[2].set_ylabel(r'$\tilde{T}$')
+
+plt.tight_layout()
+
+filename = '/Volumes/ICESTOCKS/Ice Stocks/new_transfer_tolga/Figures/Solutions.pdf'
+# plt.savefig(filename, dpi=400, bbox_inches='tight')
+
+plt.show()
+
+
+
+
+
+#%%
+
+
+
+
+
 
 
